@@ -2,6 +2,14 @@
 
 Lightweight CLI for Atlassian APIs (Jira, Bitbucket). Outputs JSON for easy scripting.
 
+## What does this cli provide? - 4 things
+
+1) READ Jira ticket
+2) WRITE Jira ticket status
+3) READ bitbucket pipeline status 
+4) READ wiki page
+
+
 ## Setup
 
 ### 1. Create API Tokens
