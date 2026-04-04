@@ -68,4 +68,4 @@ dotnet run -- bb pipeline PROJ-101 PROJ-102
 
 ## Integration
 
-Can be integrated with shell scripts to show pipeline and Jira status in dashboards.
+Can be integrated with shell scripts to show pipeline and Jira status.
