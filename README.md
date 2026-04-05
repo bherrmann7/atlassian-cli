@@ -47,31 +47,50 @@ dotnet user-secrets set "Atlassian:BitbucketRepo" "your-repo"
 
 User secrets are stored outside the project directory (in `~/.microsoft/usersecrets/`) and are never committed to source control. Works on macOS, Windows, and Linux.
 
-### 3. Build
+### 3. Install
 
 ```bash
-dotnet build
+cd ~/prj/atl-cli
+dotnet pack
+dotnet tool install --global --add-source ./bin/Release/ AtlCli
+```
+
+To update after making changes:
+
+```bash
+dotnet pack && dotnet tool update --global --add-source ./bin/Release/ AtlCli
 ```
 
 ## Usage
 
 ```bash
-# Run from the project directory
-cd ~/prj/atl-cli
-
 # Jira — batch ticket statuses
-dotnet run -- jira status PROJ-101 PROJ-102 PROJ-103
+atl-cli jira status PROJ-101 PROJ-102 PROJ-103
 # {"PROJ-101":"PR Review","PROJ-102":"Done","PROJ-103":"Done"}
 
 # Jira — full issue details
-dotnet run -- jira issue PROJ-101
+atl-cli jira issue PROJ-101
 
 # Jira — transition a ticket
-dotnet run -- jira transition PROJ-101 "In Progress"
+atl-cli jira transition PROJ-101 "In Progress"
 
 # Bitbucket — pipeline status per branch
-dotnet run -- bb pipeline PROJ-101 PROJ-102
+atl-cli bb pipeline PROJ-101 PROJ-102
 # {"PROJ-101":{"Status":"FAILED","BuildNumber":7633}}
+```
+
+## Options
+
+### `--as-curl`
+
+Print the equivalent curl command instead of executing the API call. Works with any command.
+
+```bash
+atl-cli jira issue PROJ-101 --as-curl
+# curl -s \
+#   -H 'Authorization: Basic ...' \
+#   -H 'Accept: application/json' \
+#   'https://yoursite.atlassian.net/rest/api/3/issue/PROJ-101?fields=status,summary'
 ```
 
 ## Integration

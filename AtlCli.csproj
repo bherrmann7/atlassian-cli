@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UserSecretsId>23f3131b-d576-4606-b14e-545a265af377</UserSecretsId>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>atl-cli</ToolCommandName>
+    <PackageId>AtlCli</PackageId>
   </PropertyGroup>
 
   <ItemGroup>

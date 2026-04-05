@@ -9,10 +9,14 @@ A lightweight .NET CLI for Atlassian APIs (Jira, Bitbucket, Confluence). Outputs
 ## Build & Run
 
 ```bash
-dotnet build
-dotnet run -- jira status PS-2811
-dotnet run -- bb pipeline PS-2811
-dotnet run -- wiki page 12345
+# Build and install as global tool
+dotnet pack
+dotnet tool install --global --add-source ./bin/Release/ AtlCli
+
+# Then use from anywhere
+atl-cli jira status PS-2811
+atl-cli bb pipeline PS-2811
+atl-cli wiki page 12345
 ```
 
 No tests exist in this project. Configuration uses `dotnet user-secrets` (see README.md for setup).

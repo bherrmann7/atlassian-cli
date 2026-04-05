@@ -11,15 +11,17 @@ public partial class AtlassianClient
     private readonly HttpClient _bbHttp;
     private readonly AtlassianConfig _config;
 
-    public AtlassianClient(AtlassianConfig config)
+    public AtlassianClient(AtlassianConfig config, bool asCurl = false)
     {
         _config = config;
 
-        _jiraHttp = new HttpClient { BaseAddress = new Uri(config.JiraBaseUrl) };
+        _jiraHttp = asCurl ? new HttpClient(new CurlHandler()) : new HttpClient();
+        _jiraHttp.BaseAddress = new Uri(config.JiraBaseUrl);
         _jiraHttp.DefaultRequestHeaders.Authorization = BasicAuth(config.Email, config.JiraToken);
         _jiraHttp.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        _bbHttp = new HttpClient { BaseAddress = new Uri("https://api.bitbucket.org") };
+        _bbHttp = asCurl ? new HttpClient(new CurlHandler()) : new HttpClient();
+        _bbHttp.BaseAddress = new Uri("https://api.bitbucket.org");
         _bbHttp.DefaultRequestHeaders.Authorization = BasicAuth(config.Email, config.BitbucketToken);
         _bbHttp.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
@@ -37,20 +39,24 @@ public partial class AtlassianClient
         return doc.RootElement;
     }
 
-    public async Task<Dictionary<string, string>> GetIssueStatusesAsync(IEnumerable<string> keys)
+    public async Task<Dictionary<string, IssueStatusInfo>> GetIssueStatusesAsync(IEnumerable<string> keys)
     {
         var keyList = string.Join(",", keys);
         var jql = Uri.EscapeDataString($"key in ({keyList})");
-        var resp = await _jiraHttp.GetAsync($"/rest/api/3/search/jql?jql={jql}&fields=status&maxResults=50");
+        var resp = await _jiraHttp.GetAsync($"/rest/api/3/search/jql?jql={jql}&fields=status,statuscategorychangedate&maxResults=50");
         resp.EnsureSuccessStatusCode();
         var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
 
-        var result = new Dictionary<string, string>();
+        var result = new Dictionary<string, IssueStatusInfo>();
         foreach (var issue in doc.RootElement.GetProperty("issues").EnumerateArray())
         {
             var key = issue.GetProperty("key").GetString()!;
-            var status = issue.GetProperty("fields").GetProperty("status").GetProperty("name").GetString()!;
-            result[key] = status;
+            var fields = issue.GetProperty("fields");
+            var status = fields.GetProperty("status").GetProperty("name").GetString()!;
+            string? dateStr = null;
+            if (fields.TryGetProperty("statuscategorychangedate", out var dateProp) && dateProp.ValueKind == JsonValueKind.String)
+                dateStr = dateProp.GetString();
+            result[key] = new IssueStatusInfo(status, dateStr);
         }
         return result;
     }
@@ -509,5 +515,6 @@ public partial class AtlassianClient
     private static partial Regex TableCellRegex();
 }
 
+public record IssueStatusInfo(string Status, string? StatusDate);
 public record PipelineStatus(string Status, int BuildNumber);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);

@@ -16,23 +16,26 @@ if (string.IsNullOrEmpty(atlConfig.Email) || string.IsNullOrEmpty(atlConfig.Jira
     return 1;
 }
 
-var client = new AtlassianClient(atlConfig);
+var asCurl = args.Contains("--as-curl");
+var filteredArgs = args.Where(a => a != "--as-curl").ToArray();
 
-if (args.Length == 0)
+var client = new AtlassianClient(atlConfig, asCurl);
+
+if (filteredArgs.Length == 0)
 {
     PrintUsage();
     return 1;
 }
 
-var command = args[0].ToLower();
+var command = filteredArgs[0].ToLower();
 
 try
 {
     return command switch
     {
-        "jira" => await HandleJira(args[1..]),
-        "bb" => await HandleBitbucket(args[1..]),
-        "wiki" => await HandleWiki(args[1..]),
+        "jira" => await HandleJira(filteredArgs[1..]),
+        "bb" => await HandleBitbucket(filteredArgs[1..]),
+        "wiki" => await HandleWiki(filteredArgs[1..]),
         _ => PrintUsage()
     };
 }
@@ -144,6 +147,9 @@ int PrintUsage()
     Confluence:
       atl-cli wiki page <id-or-url>                  Get page content (text)
       atl-cli wiki page <id-or-url> --raw            Get page content (raw HTML)
+
+    Options:
+      --as-curl                                      Print the curl command instead of executing
     """);
     return 1;
 }
