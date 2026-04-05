@@ -9,6 +9,24 @@ Lightweight CLI for Atlassian APIs (Jira, Bitbucket). Outputs JSON for easy scri
 3) READ bitbucket pipeline status 
 4) READ wiki page
 
+```bash
+$ atl-cli jira issue PROJ-101
+{
+  "key": "PROJ-101",
+  "fields": {
+    "summary": "Fix login timeout on mobile",
+    "status": { "name": "In Progress" }
+  }
+}
+```
+
+## How
+
+Atlassian provides REST APIs for their products. This CLI wraps those APIs with simple commands and handles authentication via stored credentials.
+
+- [Jira REST API v3](https://developer.atlassian.com/cloud/jira/platform/rest/v3/)
+- [Confluence REST API v2](https://developer.atlassian.com/cloud/confluence/rest/v2/)
+- [Bitbucket REST API 2.0](https://developer.atlassian.com/cloud/bitbucket/rest/)
 
 ## Setup
 
