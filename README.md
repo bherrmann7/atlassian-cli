@@ -28,6 +28,8 @@ Atlassian provides REST APIs for their products. This CLI wraps those APIs with 
 - [Confluence REST API v2](https://developer.atlassian.com/cloud/confluence/rest/v2/)
 - [Bitbucket REST API 2.0](https://developer.atlassian.com/cloud/bitbucket/rest/)
 
+Once you have credentials, you can access these APIs directly with curl. This CLI includes an `--as-curl` option to show the raw curl command for any request, so you can see exactly what's being called or use it outside the CLI.
+
 ## Setup
 
 ### 1. Create API Tokens
