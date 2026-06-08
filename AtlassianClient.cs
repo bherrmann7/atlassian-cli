@@ -33,8 +33,104 @@ public partial class AtlassianClient
 
     public async Task<JsonElement> GetIssueAsync(string key)
     {
-        var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}?fields=status,summary");
+        var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}?fields=status,summary,description,comment,issuetype,priority,labels,assignee,issuelinks");
         resp.EnsureSuccessStatusCode();
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement;
+    }
+
+    public async Task<string> GetMyAccountIdAsync()
+    {
+        var resp = await _jiraHttp.GetAsync("/rest/api/3/myself");
+        resp.EnsureSuccessStatusCode();
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement.GetProperty("accountId").GetString()!;
+    }
+
+    public async Task<JsonElement> CreateIssueAsync(string project, string issueType, string summary, string? assignee)
+    {
+        var fields = new Dictionary<string, object?>
+        {
+            ["project"] = new { key = project },
+            ["issuetype"] = new { name = issueType },
+            ["summary"] = summary,
+        };
+
+        if (!string.IsNullOrEmpty(assignee))
+        {
+            var accountId = assignee == "@me" ? await GetMyAccountIdAsync() : assignee;
+            fields["assignee"] = new { accountId };
+        }
+
+        var json = JsonSerializer.Serialize(new { fields });
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PostAsync("/rest/api/3/issue", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Create issue failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement;
+    }
+
+    public async Task LinkIssuesAsync(string fromKey, string toKey, string linkType)
+    {
+        var payload = new
+        {
+            type = new { name = linkType },
+            inwardIssue = new { key = fromKey },
+            outwardIssue = new { key = toKey }
+        };
+        var json = JsonSerializer.Serialize(payload);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PostAsync("/rest/api/3/issueLink", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Link issues failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        // 201 Created with an empty body — nothing to parse.
+    }
+
+    public async Task<JsonElement> CreateCommentAsync(string key, string text)
+    {
+        // Wrap plain text in a minimal ADF document: one paragraph per line so newlines
+        // render. Empty lines become empty paragraphs (an ADF text node may not be "").
+        var paragraphs = text.Replace("\r\n", "\n").Split('\n')
+            .Select(line => line.Length == 0
+                ? (object)new { type = "paragraph" }
+                : new { type = "paragraph", content = new[] { new { type = "text", text = line } } })
+            .ToArray();
+
+        var payload = new { body = new { type = "doc", version = 1, content = paragraphs } };
+        var json = JsonSerializer.Serialize(payload);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PostAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}/comment", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Create comment failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement;
+    }
+
+    public async Task<JsonElement> CreateCommentAdfAsync(string key, string adfDocJson)
+    {
+        // adfDocJson is a raw ADF document body: { "version": 1, "type": "doc", "content": [...] }.
+        // Validate it parses (throws on malformed input), then wrap it as the comment "body" without
+        // re-serializing so the caller's exact ADF is preserved.
+        using (JsonDocument.Parse(adfDocJson)) { }
+
+        var json = $"{{\"body\":{adfDocJson}}}";
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PostAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}/comment", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Create comment (ADF) failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
         var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
         return doc.RootElement;
     }
@@ -101,7 +197,14 @@ public partial class AtlassianClient
 
     public async Task<string> GetConfluencePageAsync(string pageId, bool asText = false)
     {
-        var resp = await _jiraHttp.GetAsync($"/wiki/api/v2/pages/{pageId}?body-format=storage");
+        // Try the draft endpoint first; fall back to current if no draft exists.
+        // Confluence Cloud's v2 page-by-id returns the published "current" version by
+        // default, even if a draft has more recent edits, so we need an explicit query.
+        var resp = await _jiraHttp.GetAsync($"/wiki/api/v2/pages/{pageId}?body-format=storage&get-draft=true");
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            resp = await _jiraHttp.GetAsync($"/wiki/api/v2/pages/{pageId}?body-format=storage");
+        }
         resp.EnsureSuccessStatusCode();
         var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
         var root = doc.RootElement;
@@ -113,6 +216,168 @@ public partial class AtlassianClient
             body = ConvertHtmlToText(body);
 
         return $"# {title}\n\n{body}";
+    }
+
+    public async Task<List<ConfluenceSearchHit>> SearchConfluenceAsync(string text, int limit = 25)
+    {
+        // CQL: search for the term across all current pages, ranked by relevance.
+        // Quoted phrase so terms with hyphens or special chars don't break the parser.
+        string cql = $"text ~ \"{text.Replace("\"", "\\\"")}\" and type = page";
+        var url = $"/wiki/rest/api/search?cql={Uri.EscapeDataString(cql)}&limit={limit}";
+        var resp = await _jiraHttp.GetAsync(url);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"search failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {err[..Math.Min(err.Length, 400)]}");
+        }
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        var hits = new List<ConfluenceSearchHit>();
+        foreach (var r in doc.RootElement.GetProperty("results").EnumerateArray())
+        {
+            string? excerpt = r.TryGetProperty("excerpt", out var e) ? e.GetString() : null;
+            var content = r.GetProperty("content");
+            string id = content.GetProperty("id").GetString() ?? "";
+            string title = content.GetProperty("title").GetString() ?? "";
+            string? spaceKey = null;
+            if (r.TryGetProperty("resultGlobalContainer", out var ctn) &&
+                ctn.TryGetProperty("title", out var ctnt))
+                spaceKey = ctnt.GetString();
+            hits.Add(new ConfluenceSearchHit(id, title, spaceKey, excerpt));
+        }
+        return hits;
+    }
+
+    public async Task<List<ConfluenceAttachment>> ListConfluenceAttachmentsAsync(string pageId)
+    {
+        var resp = await _jiraHttp.GetAsync($"/wiki/api/v2/pages/{pageId}/attachments?limit=100");
+        resp.EnsureSuccessStatusCode();
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        var list = new List<ConfluenceAttachment>();
+        foreach (var a in doc.RootElement.GetProperty("results").EnumerateArray())
+        {
+            list.Add(new ConfluenceAttachment(
+                Id: a.GetProperty("id").GetString() ?? "",
+                Title: a.GetProperty("title").GetString() ?? "",
+                MediaType: a.GetProperty("mediaType").GetString() ?? "",
+                DownloadLink: a.TryGetProperty("downloadLink", out var d) ? d.GetString() : null
+            ));
+        }
+        return list;
+    }
+
+    public async Task DownloadConfluenceAttachmentAsync(string downloadPath, string localPath)
+    {
+        // Confluence v2 attachments API returns links like "/download/attachments/...".
+        // Those resolve under the /wiki context root on Cloud.
+        var url = downloadPath.StartsWith("/wiki") ? downloadPath : "/wiki" + downloadPath;
+        var resp = await _jiraHttp.GetAsync(url);
+        resp.EnsureSuccessStatusCode();
+        await using var fs = File.Create(localPath);
+        await resp.Content.CopyToAsync(fs);
+    }
+
+    public async Task<string?> GetDrawioDiagramAsync(string pageId, string diagramName)
+    {
+        // Modern Confluence Cloud stores drawio diagrams as "custom-content".
+        // First read the page body to find the custContentId, then fetch that
+        // custom content's body (which holds the diagram XML).
+        var pageResp = await _jiraHttp.GetAsync($"/wiki/api/v2/pages/{pageId}?body-format=storage");
+        pageResp.EnsureSuccessStatusCode();
+        var pageDoc = await JsonDocument.ParseAsync(await pageResp.Content.ReadAsStreamAsync());
+        var storage = pageDoc.RootElement.GetProperty("body").GetProperty("storage").GetProperty("value").GetString() ?? "";
+
+        var idMatch = Regex.Match(storage, @"name=""custContentId"">(\d+)<");
+        if (!idMatch.Success)
+            throw new HttpRequestException("No custContentId macro parameter found on the page.");
+        var custId = idMatch.Groups[1].Value;
+
+        var resp = await _jiraHttp.GetAsync($"/wiki/rest/api/content/{custId}?expand=body.storage,body.dynamic,body.view");
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"custom-content fetch failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {err[..Math.Min(err.Length, 400)]}");
+        }
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        if (doc.RootElement.TryGetProperty("body", out var bodyEl))
+        {
+            foreach (var key in new[] { "storage", "dynamic", "view", "raw" })
+            {
+                if (bodyEl.TryGetProperty(key, out var rep) &&
+                    rep.TryGetProperty("value", out var v) &&
+                    v.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrWhiteSpace(v.GetString()))
+                {
+                    return v.GetString();
+                }
+            }
+        }
+        return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    public async Task<ConfluencePageMeta> GetConfluencePageMetaAsync(string pageId)
+    {
+        var resp = await _jiraHttp.GetAsync($"/wiki/api/v2/pages/{pageId}");
+        resp.EnsureSuccessStatusCode();
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        var root = doc.RootElement;
+        return new ConfluencePageMeta(
+            Id: root.GetProperty("id").GetString() ?? "",
+            Title: root.GetProperty("title").GetString() ?? "",
+            SpaceId: root.GetProperty("spaceId").GetString() ?? "",
+            Status: root.GetProperty("status").GetString() ?? "",
+            VersionNumber: root.GetProperty("version").GetProperty("number").GetInt32(),
+            ParentId: root.TryGetProperty("parentId", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null
+        );
+    }
+
+    public async Task<ConfluencePageCreated> CreateConfluencePageAsync(string spaceId, string? parentId, string title, string storageBody, bool draft)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["spaceId"] = spaceId,
+            ["status"] = draft ? "draft" : "current",
+            ["title"] = title,
+            ["body"] = new { representation = "storage", value = storageBody }
+        };
+        if (!string.IsNullOrEmpty(parentId)) payload["parentId"] = parentId;
+
+        var json = JsonSerializer.Serialize(payload);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PostAsync("/wiki/api/v2/pages", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Create page failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        var root = doc.RootElement;
+        var id = root.GetProperty("id").GetString() ?? "";
+        var webui = root.TryGetProperty("_links", out var links) && links.TryGetProperty("webui", out var w) ? w.GetString() : null;
+        return new ConfluencePageCreated(id, title, draft ? "draft" : "current", webui);
+    }
+
+    public async Task<ConfluencePageCreated> UpdateConfluencePageAsync(string pageId, string title, string storageBody, bool draft)
+    {
+        var meta = await GetConfluencePageMetaAsync(pageId);
+        // Drafts do not support version increments — Confluence requires version: 1.
+        var nextVersion = draft ? 1 : meta.VersionNumber + 1;
+        var payload = new
+        {
+            id = pageId,
+            status = draft ? "draft" : "current",
+            title,
+            body = new { representation = "storage", value = storageBody },
+            version = new { number = nextVersion }
+        };
+        var json = JsonSerializer.Serialize(payload);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PutAsync($"/wiki/api/v2/pages/{pageId}", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Update page failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        return new ConfluencePageCreated(pageId, title, draft ? "draft" : "current", null);
     }
 
     private static string ConvertHtmlToText(string html)
@@ -419,6 +684,99 @@ public partial class AtlassianClient
         return result;
     }
 
+    public async Task<List<PullRequestInfo>> GetPullRequestsAsync(string branch, string? state = null)
+    {
+        // Bitbucket states: OPEN, MERGED, DECLINED, SUPERSEDED. Multiple state params OR them.
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var q = $"source.branch.name=\"{branch}\"";
+        var url = $"{repoPath}/pullrequests?q={Uri.EscapeDataString(q)}&pagelen=20&sort=-updated_on";
+        if (!string.IsNullOrEmpty(state))
+        {
+            foreach (var s in state.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                url += $"&state={Uri.EscapeDataString(s.Trim().ToUpper())}";
+        }
+        else
+        {
+            // Default: include all terminal states so callers see merged/declined PRs too
+            url += "&state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED";
+        }
+
+        var resp = await _bbHttp.GetAsync(url);
+        resp.EnsureSuccessStatusCode();
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+
+        var results = new List<PullRequestInfo>();
+        foreach (var pr in doc.RootElement.GetProperty("values").EnumerateArray())
+        {
+            var id = pr.GetProperty("id").GetInt32();
+            var prState = pr.GetProperty("state").GetString() ?? "";
+            var title = pr.GetProperty("title").GetString() ?? "";
+            var href = pr.GetProperty("links").GetProperty("html").GetProperty("href").GetString() ?? "";
+            var srcBranch = pr.GetProperty("source").GetProperty("branch").GetProperty("name").GetString() ?? "";
+            string? closedOn = pr.TryGetProperty("closed_on", out var co) && co.ValueKind == JsonValueKind.String ? co.GetString() : null;
+            results.Add(new PullRequestInfo(id, prState, title, href, srcBranch, closedOn));
+        }
+        return results;
+    }
+
+    public async Task<JsonElement> CreatePullRequestAsync(string source, string dest, string title, string? description, bool draft)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var fields = new Dictionary<string, object?>
+        {
+            ["title"] = title,
+            ["source"] = new { branch = new { name = source } },
+            ["destination"] = new { branch = new { name = dest } },
+            ["draft"] = draft,
+        };
+        if (description is not null) fields["description"] = description;
+
+        var json = JsonSerializer.Serialize(fields);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _bbHttp.PostAsync($"{repoPath}/pullrequests", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Create pull request failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement;
+    }
+
+    public async Task<JsonElement> UpdatePullRequestAsync(int id, string? title, string? description, bool? draft)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+
+        // Bitbucket's PUT requires title (and silently clears omitted fields like description),
+        // so fetch the current PR and merge: only the explicitly-passed fields change.
+        var getResp = await _bbHttp.GetAsync($"{repoPath}/pullrequests/{id}");
+        if (!getResp.IsSuccessStatusCode)
+        {
+            var errBody = await getResp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Fetch pull request {id} failed ({(int)getResp.StatusCode} {getResp.ReasonPhrase}): {errBody}");
+        }
+        using var current = await JsonDocument.ParseAsync(await getResp.Content.ReadAsStreamAsync());
+        var root = current.RootElement;
+
+        var fields = new Dictionary<string, object?>
+        {
+            ["title"] = title ?? root.GetProperty("title").GetString(),
+            ["description"] = description ?? (root.TryGetProperty("description", out var d) ? d.GetString() ?? "" : ""),
+            ["draft"] = draft ?? (root.TryGetProperty("draft", out var dr) && dr.GetBoolean()),
+        };
+
+        var json = JsonSerializer.Serialize(fields);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _bbHttp.PutAsync($"{repoPath}/pullrequests/{id}", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Update pull request {id} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement;
+    }
+
     public async Task<PipelineFailure?> GetPipelineFailureAsync(string branch)
     {
         var data = await GetPipelinesAsync();
@@ -518,3 +876,8 @@ public partial class AtlassianClient
 public record IssueStatusInfo(string Status, string? StatusDate);
 public record PipelineStatus(string Status, int BuildNumber);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
+public record PullRequestInfo(int Id, string State, string Title, string Url, string SourceBranch, string? ClosedOn);
+public record ConfluencePageMeta(string Id, string Title, string SpaceId, string Status, int VersionNumber, string? ParentId);
+public record ConfluencePageCreated(string Id, string Title, string Status, string? WebUi);
+public record ConfluenceAttachment(string Id, string Title, string MediaType, string? DownloadLink);
+public record ConfluenceSearchHit(string Id, string Title, string? SpaceContainer, string? Excerpt);
