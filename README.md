@@ -91,6 +91,11 @@ atl-cli jira status PROJ-101 PROJ-102 PROJ-103
 # Jira — full issue details
 atl-cli jira issue PROJ-101
 
+# Bitbucket — trigger a pipeline (default branch pipeline, or a named custom: one)
+atl-cli bb pipeline-run PS-3070
+atl-cli bb pipeline-run PS-3070 --selector custom:deploy-code-to-production-express
+# Prints the new pipeline JSON (build_number, uuid, state). Requires pipeline:write on the token.
+
 # Jira — transition a ticket
 atl-cli jira transition PROJ-101 "In Progress"
 

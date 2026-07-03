@@ -44,6 +44,11 @@ catch (HttpRequestException ex)
     Console.Error.WriteLine($"API error: {ex.Message}");
     return 1;
 }
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"Invalid input: {ex.Message}");
+    return 1;
+}
 
 async Task<int> HandleJira(string[] args)
 {
@@ -132,6 +137,48 @@ async Task<int> HandleJira(string[] args)
                 return 1;
             }
             Console.WriteLine(JsonSerializer.Serialize(posted, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        case "describe" when rest.Length >= 2:
+        {
+            var key = rest[0];
+            string? text = null;
+            string? adfFile = null;
+            for (int i = 1; i < rest.Length; i++)
+            {
+                if (rest[i] == "--body-file" && i + 1 < rest.Length)
+                {
+                    var file = rest[++i];
+                    if (!File.Exists(file)) { Console.Error.WriteLine($"Body file not found: {file}"); return 1; }
+                    text = await File.ReadAllTextAsync(file);
+                }
+                else if (rest[i] == "--adf-file" && i + 1 < rest.Length)
+                {
+                    adfFile = rest[++i];
+                    if (!File.Exists(adfFile)) { Console.Error.WriteLine($"ADF file not found: {adfFile}"); return 1; }
+                }
+                else if (!rest[i].StartsWith("--"))
+                {
+                    text ??= rest[i];
+                }
+            }
+
+            if (adfFile is not null)
+            {
+                var adfJson = await File.ReadAllTextAsync(adfFile);
+                await client.SetDescriptionAdfAsync(key, adfJson);
+            }
+            else if (text is not null)
+            {
+                await client.SetDescriptionAsync(key, text);
+            }
+            else
+            {
+                Console.Error.WriteLine("Usage: atl-cli jira describe KEY \"text\"  |  KEY --body-file FILE (plain text)  |  KEY --adf-file FILE (raw ADF JSON)");
+                return 1;
+            }
+            Console.WriteLine($"{key} description updated");
             return 0;
         }
 
@@ -251,6 +298,27 @@ async Task<int> HandleBitbucket(string[] args)
             }
             Console.WriteLine(JsonSerializer.Serialize(failure, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
+
+        case "pipeline-run" when rest.Length >= 1:
+        {
+            var runBranch = rest[0];
+            string? selType = null, selPattern = null;
+            for (int i = 1; i < rest.Length; i++)
+            {
+                string? selVal = null;
+                if (rest[i] == "--selector" && i + 1 < rest.Length) selVal = rest[++i];
+                else if (rest[i].StartsWith("--selector=")) selVal = rest[i].Substring("--selector=".Length);
+                if (selVal is not null)
+                {
+                    var idx = selVal.IndexOf(':');
+                    if (idx > 0) { selType = selVal.Substring(0, idx); selPattern = selVal.Substring(idx + 1); }
+                    else { selType = selVal; }
+                }
+            }
+            var triggered = await client.TriggerPipelineAsync(runBranch, selType, selPattern);
+            Console.WriteLine(JsonSerializer.Serialize(triggered, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
 
         default:
             return PrintUsage();
@@ -403,12 +471,17 @@ int PrintUsage()
       atl-cli jira comment PROJ-101 "text"           Add a comment (plain text -> ADF)
       atl-cli jira comment PROJ-101 --body-file FILE Add a comment from a plain-text file
       atl-cli jira comment PROJ-101 --adf-file FILE  Add a comment from a raw ADF JSON doc (rich formatting)
+      atl-cli jira describe PROJ-101 "text"          Set the description (plain text -> ADF; replaces existing)
+      atl-cli jira describe PROJ-101 --body-file FILE Set the description from a plain-text file
+      atl-cli jira describe PROJ-101 --adf-file FILE Set the description from a raw ADF JSON doc (rich formatting)
       atl-cli jira link PROJ-101 PROJ-102 [--type Relates]
                                                      Link two issues ("relates to" by default)
 
     Bitbucket:
       atl-cli bb pipeline PROJ-101 [PROJ-102 ...]    Pipeline status per branch (JSON)
       atl-cli bb pipeline-log PROJ-101                Failed step + error details
+      atl-cli bb pipeline-run BRANCH [--selector custom:PATTERN]
+                                                     Trigger a pipeline (default branch pipeline, or a custom: one)
       atl-cli bb pr PS-2904 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
       atl-cli bb pr-create --source BRANCH --title "..." [--dest develop] [--description... | --description-file FILE] [--draft]
                                                      Create a pull request (prints JSON incl. id)

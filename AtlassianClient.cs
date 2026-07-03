@@ -135,6 +135,40 @@ public partial class AtlassianClient
         return doc.RootElement;
     }
 
+    public async Task SetDescriptionAsync(string key, string text)
+    {
+        // Same plain-text -> ADF wrapping as CreateCommentAsync: one paragraph per line.
+        var paragraphs = text.Replace("\r\n", "\n").Split('\n')
+            .Select(line => line.Length == 0
+                ? (object)new { type = "paragraph" }
+                : new { type = "paragraph", content = new[] { new { type = "text", text = line } } })
+            .ToArray();
+
+        var adf = new { type = "doc", version = 1, content = paragraphs };
+        var payload = new { fields = new { description = adf } };
+        var json = JsonSerializer.Serialize(payload);
+        await PutDescriptionAsync(key, json);
+    }
+
+    public async Task SetDescriptionAdfAsync(string key, string adfDocJson)
+    {
+        // adfDocJson is a raw ADF document body: { "version": 1, "type": "doc", "content": [...] }.
+        using (JsonDocument.Parse(adfDocJson)) { }
+        var json = $"{{\"fields\":{{\"description\":{adfDocJson}}}}}";
+        await PutDescriptionAsync(key, json);
+    }
+
+    private async Task PutDescriptionAsync(string key, string json)
+    {
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PutAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Set description failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+    }
+
     public async Task<Dictionary<string, IssueStatusInfo>> GetIssueStatusesAsync(IEnumerable<string> keys)
     {
         var keyList = string.Join(",", keys);
@@ -330,8 +364,27 @@ public partial class AtlassianClient
         );
     }
 
+    // Confluence storage bodies are XHTML: the body must begin with a markup element, not
+    // stray text. The common trap is feeding `wiki page --raw` output straight back in — it
+    // carries a leading "# {title}" display line, which Confluence silently wraps in a <p> and
+    // applies, corrupting the top of the page. Reject it here with a clear, actionable message
+    // rather than letting a "successful" update quietly prepend garbage.
+    private static void RejectLeadingNonMarkup(string storageBody)
+    {
+        var trimmed = storageBody.TrimStart();
+        if (trimmed.Length > 0 && trimmed[0] != '<')
+        {
+            var preview = trimmed.Length > 60 ? trimmed[..60] + "…" : trimmed;
+            throw new ArgumentException(
+                $"Storage body must start with an XHTML element, but starts with text: \"{preview}\". " +
+                $"If this came from `wiki page --raw`, strip the leading \"# {{title}}\" line " +
+                $"(everything before the first '<') before updating.");
+        }
+    }
+
     public async Task<ConfluencePageCreated> CreateConfluencePageAsync(string spaceId, string? parentId, string title, string storageBody, bool draft)
     {
+        RejectLeadingNonMarkup(storageBody);
         var payload = new Dictionary<string, object?>
         {
             ["spaceId"] = spaceId,
@@ -353,11 +406,13 @@ public partial class AtlassianClient
         var root = doc.RootElement;
         var id = root.GetProperty("id").GetString() ?? "";
         var webui = root.TryGetProperty("_links", out var links) && links.TryGetProperty("webui", out var w) ? w.GetString() : null;
-        return new ConfluencePageCreated(id, title, draft ? "draft" : "current", webui);
+        int? version = root.TryGetProperty("version", out var vEl) && vEl.TryGetProperty("number", out var vNum) ? vNum.GetInt32() : null;
+        return new ConfluencePageCreated(id, title, draft ? "draft" : "current", webui, version);
     }
 
     public async Task<ConfluencePageCreated> UpdateConfluencePageAsync(string pageId, string title, string storageBody, bool draft)
     {
+        RejectLeadingNonMarkup(storageBody);
         var meta = await GetConfluencePageMetaAsync(pageId);
         // Drafts do not support version increments — Confluence requires version: 1.
         var nextVersion = draft ? 1 : meta.VersionNumber + 1;
@@ -377,7 +432,21 @@ public partial class AtlassianClient
             var errBody = await resp.Content.ReadAsStringAsync();
             throw new HttpRequestException($"Update page failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
         }
-        return new ConfluencePageCreated(pageId, title, draft ? "draft" : "current", null);
+
+        // A 2xx does NOT guarantee the body was applied: Confluence can accept the request
+        // and silently ignore a malformed storage body (e.g. stray leading text before the
+        // root element), leaving the page unchanged at its old version. Verify against the
+        // authoritative post-update state instead of trusting the request we sent.
+        var after = await GetConfluencePageMetaAsync(pageId);
+        if (!draft && after.VersionNumber <= meta.VersionNumber)
+        {
+            throw new HttpRequestException(
+                $"Update page reported success but the page version did not advance " +
+                $"(still v{after.VersionNumber}); Confluence did not apply the new body. " +
+                $"The storage XHTML was likely rejected — check it is valid and does not " +
+                $"begin with stray text before the root element.");
+        }
+        return new ConfluencePageCreated(pageId, after.Title, after.Status, null, after.VersionNumber);
     }
 
     private static string ConvertHtmlToText(string html)
@@ -651,6 +720,37 @@ public partial class AtlassianClient
         return doc.RootElement;
     }
 
+    public async Task<JsonElement> TriggerPipelineAsync(string branch, string? selectorType, string? selectorPattern)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+
+        // pipeline_ref_target with no selector runs the branch's default pipeline;
+        // a "custom" selector + pattern runs a named custom: pipeline from bitbucket-pipelines.yml.
+        var target = new Dictionary<string, object?>
+        {
+            ["type"] = "pipeline_ref_target",
+            ["ref_type"] = "branch",
+            ["ref_name"] = branch,
+        };
+        if (selectorType is not null)
+        {
+            target["selector"] = selectorPattern is not null
+                ? new { type = selectorType, pattern = selectorPattern }
+                : (object)new { type = selectorType };
+        }
+
+        var json = JsonSerializer.Serialize(new Dictionary<string, object?> { ["target"] = target });
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _bbHttp.PostAsync($"{repoPath}/pipelines/", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Trigger pipeline failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement;
+    }
+
     public async Task<Dictionary<string, PipelineStatus>> GetPipelineStatusesAsync(IEnumerable<string> branches)
     {
         var branchSet = new HashSet<string>(branches);
@@ -719,6 +819,32 @@ public partial class AtlassianClient
         return results;
     }
 
+    // Bitbucket only auto-applies a repo's default reviewers when a PR is created through the web UI;
+    // the create-PR REST endpoint ignores them. To match the UI we resolve them ourselves. The author
+    // can't be their own reviewer, so excludeUuid (the PR author) is dropped from the list.
+    private async Task<List<object>> GetDefaultReviewersAsync(string? excludeUuid)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var reviewers = new List<object>();
+        var url = $"{repoPath}/default-reviewers?pagelen=100";
+        while (url is not null)
+        {
+            var resp = await _bbHttp.GetAsync(url);
+            if (!resp.IsSuccessStatusCode) break;
+            using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+            var root = doc.RootElement;
+            foreach (var v in root.GetProperty("values").EnumerateArray())
+            {
+                if (!v.TryGetProperty("uuid", out var uuidEl)) continue;
+                var uuid = uuidEl.GetString();
+                if (uuid is null || uuid == excludeUuid) continue;
+                reviewers.Add(new { uuid });
+            }
+            url = root.TryGetProperty("next", out var next) && next.ValueKind == JsonValueKind.String ? next.GetString() : null;
+        }
+        return reviewers;
+    }
+
     public async Task<JsonElement> CreatePullRequestAsync(string source, string dest, string title, string? description, bool draft)
     {
         var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
@@ -738,6 +864,48 @@ public partial class AtlassianClient
         {
             var errBody = await resp.Content.ReadAsStringAsync();
             throw new HttpRequestException($"Create pull request failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        var created = doc.RootElement.Clone();
+
+        // The create endpoint ignores default reviewers, so attach them in a follow-up PUT now that the
+        // create response has told us the author's uuid (the one account we must exclude). Best-effort:
+        // a reviewer-attach failure shouldn't sink an otherwise-created PR — report the PR either way.
+        var prId = created.GetProperty("id").GetInt32();
+        string? authorUuid = created.TryGetProperty("author", out var a) && a.TryGetProperty("uuid", out var au)
+            ? au.GetString() : null;
+        var reviewers = await GetDefaultReviewersAsync(authorUuid);
+        if (reviewers.Count > 0)
+        {
+            try { return await SetPullRequestReviewersAsync(prId, reviewers); }
+            catch (HttpRequestException ex) { Console.Error.WriteLine($"warning: PR {prId} created but adding reviewers failed: {ex.Message}"); }
+        }
+        return created;
+    }
+
+    // Sets the reviewers on an existing PR via PUT. Bitbucket's PUT clears omitted fields, so we re-send
+    // the current title/description/draft alongside the new reviewers to leave everything else intact.
+    private async Task<JsonElement> SetPullRequestReviewersAsync(int id, List<object> reviewers)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var getResp = await _bbHttp.GetAsync($"{repoPath}/pullrequests/{id}");
+        getResp.EnsureSuccessStatusCode();
+        using var current = await JsonDocument.ParseAsync(await getResp.Content.ReadAsStreamAsync());
+        var root = current.RootElement;
+
+        var fields = new Dictionary<string, object?>
+        {
+            ["title"] = root.GetProperty("title").GetString(),
+            ["description"] = root.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "",
+            ["draft"] = root.TryGetProperty("draft", out var dr) && dr.GetBoolean(),
+            ["reviewers"] = reviewers,
+        };
+        var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        var resp = await _bbHttp.PutAsync($"{repoPath}/pullrequests/{id}", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Set reviewers on PR {id} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
         }
         var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
         return doc.RootElement;
@@ -878,6 +1046,6 @@ public record PipelineStatus(string Status, int BuildNumber);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
 public record PullRequestInfo(int Id, string State, string Title, string Url, string SourceBranch, string? ClosedOn);
 public record ConfluencePageMeta(string Id, string Title, string SpaceId, string Status, int VersionNumber, string? ParentId);
-public record ConfluencePageCreated(string Id, string Title, string Status, string? WebUi);
+public record ConfluencePageCreated(string Id, string Title, string Status, string? WebUi, int? Version = null);
 public record ConfluenceAttachment(string Id, string Title, string MediaType, string? DownloadLink);
 public record ConfluenceSearchHit(string Id, string Title, string? SpaceContainer, string? Excerpt);

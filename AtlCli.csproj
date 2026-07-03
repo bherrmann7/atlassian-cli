@@ -9,6 +9,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>atl-cli</ToolCommandName>
     <PackageId>AtlCli</PackageId>
+    <Version>1.0.4</Version>
   </PropertyGroup>
 
   <ItemGroup>
