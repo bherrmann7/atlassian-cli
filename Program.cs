@@ -227,6 +227,18 @@ async Task<int> HandleBitbucket(string[] args)
             Console.WriteLine(JsonSerializer.Serialize(prs, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
 
+        case "pr-body" when rest.Length >= 1:
+        {
+            if (!int.TryParse(rest[0], out int bodyPrId))
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb pr-body PR_ID   (prints the PR's current description to stdout)");
+                return 1;
+            }
+            var body = await client.GetPullRequestBodyAsync(bodyPrId);
+            Console.WriteLine(body);
+            return 0;
+        }
+
         case "pr-create":
         {
             string? source = null, dest = "develop", title = null, description = null;
@@ -483,6 +495,7 @@ int PrintUsage()
       atl-cli bb pipeline-run BRANCH [--selector custom:PATTERN]
                                                      Trigger a pipeline (default branch pipeline, or a custom: one)
       atl-cli bb pr PS-2904 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
+      atl-cli bb pr-body PR_ID                        Print a PR's current description (for get-then-edit round-tripping)
       atl-cli bb pr-create --source BRANCH --title "..." [--dest develop] [--description... | --description-file FILE] [--draft]
                                                      Create a pull request (prints JSON incl. id)
       atl-cli bb pr-edit PR_ID [--title "..."] [--description... | --description-file FILE] [--draft true|false]

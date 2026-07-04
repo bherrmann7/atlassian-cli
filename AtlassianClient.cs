@@ -819,6 +819,23 @@ public partial class AtlassianClient
         return results;
     }
 
+    // Fetch a single PR's current description (Bitbucket "markdown"-rendered body). Returns it verbatim
+    // so it can be round-tripped straight back through pr-edit --description-file without losing edits.
+    public async Task<string> GetPullRequestBodyAsync(int prId)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var resp = await _bbHttp.GetAsync($"{repoPath}/pullrequests/{prId}");
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Fetch pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement.TryGetProperty("description", out var d) && d.ValueKind == JsonValueKind.String
+            ? d.GetString() ?? ""
+            : "";
+    }
+
     // Bitbucket only auto-applies a repo's default reviewers when a PR is created through the web UI;
     // the create-PR REST endpoint ignores them. To match the UI we resolve them ourselves. The author
     // can't be their own reviewer, so excludeUuid (the PR author) is dropped from the list.
