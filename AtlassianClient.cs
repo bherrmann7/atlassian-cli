@@ -169,6 +169,22 @@ public partial class AtlassianClient
         }
     }
 
+    // Story Points custom field. customfield_10026 is the field on this instance's edit
+    // screen (confirmed via /rest/api/3/issue/{key}/editmeta — it's the only editable
+    // "Story Points" field, and populated tickets use it). Value is a plain number.
+    public async Task SetStoryPointsAsync(string key, decimal points)
+    {
+        var value = points.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var json = $"{{\"fields\":{{\"customfield_10026\":{value}}}}}";
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PutAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Set story points failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+    }
+
     public async Task<Dictionary<string, IssueStatusInfo>> GetIssueStatusesAsync(IEnumerable<string> keys)
     {
         var keyList = string.Join(",", keys);

@@ -196,6 +196,19 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "points" when rest.Length == 2:
+        {
+            var key = rest[0];
+            if (!decimal.TryParse(rest[1], out var points))
+            {
+                Console.Error.WriteLine("Usage: atl-cli jira points PROJ-101 <number>");
+                return 1;
+            }
+            await client.SetStoryPointsAsync(key, points);
+            Console.WriteLine($"{key} story points -> {points}");
+            return 0;
+        }
+
         default:
             return PrintUsage();
     }
@@ -487,6 +500,7 @@ int PrintUsage()
       atl-cli jira describe PROJ-101 --body-file FILE Set the description from a plain-text file
       atl-cli jira describe PROJ-101 --adf-file FILE Set the description from a raw ADF JSON doc (rich formatting)
       atl-cli jira link PROJ-101 PROJ-102 [--type Relates]
+      atl-cli jira points PROJ-101 5                 Set Story Points (customfield_10026)
                                                      Link two issues ("relates to" by default)
 
     Bitbucket:
