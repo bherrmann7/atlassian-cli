@@ -852,6 +852,72 @@ public partial class AtlassianClient
             : "";
     }
 
+    // A PR's comments — general and inline arrive in one feed. An inline comment carries an `inline`
+    // object naming the file and line; a reply carries `parent.id`. Deleted comments come back as
+    // tombstones with no content, so they're skipped. pagelen=100 covers any realistic review thread
+    // in one call (same "fetch a generous page, don't paginate" approach as the pipeline lookups).
+    public async Task<List<PullRequestComment>> GetPullRequestCommentsAsync(int prId)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var resp = await _bbHttp.GetAsync($"{repoPath}/pullrequests/{prId}/comments?pagelen=100&sort=created_on");
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Fetch comments for pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+
+        var results = new List<PullRequestComment>();
+        foreach (var c in doc.RootElement.GetProperty("values").EnumerateArray())
+        {
+            if (c.TryGetProperty("deleted", out var del) && del.ValueKind == JsonValueKind.True) continue;
+
+            var id = c.GetProperty("id").GetInt32();
+            var text = c.TryGetProperty("content", out var content) && content.TryGetProperty("raw", out var raw)
+                ? raw.GetString() ?? "" : "";
+            var author = c.TryGetProperty("user", out var u) && u.TryGetProperty("display_name", out var dn)
+                ? dn.GetString() ?? "" : "";
+            string? createdOn = c.TryGetProperty("created_on", out var co) && co.ValueKind == JsonValueKind.String ? co.GetString() : null;
+            string? updatedOn = c.TryGetProperty("updated_on", out var uo) && uo.ValueKind == JsonValueKind.String ? uo.GetString() : null;
+
+            string? inlinePath = null;
+            int? inlineLine = null;
+            if (c.TryGetProperty("inline", out var inl) && inl.ValueKind == JsonValueKind.Object)
+            {
+                inlinePath = inl.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+                // `to` is the line in the new file, `from` the old one; both are null for a file-level comment.
+                if (inl.TryGetProperty("to", out var to) && to.ValueKind == JsonValueKind.Number) inlineLine = to.GetInt32();
+                else if (inl.TryGetProperty("from", out var fr) && fr.ValueKind == JsonValueKind.Number) inlineLine = fr.GetInt32();
+            }
+
+            int? parentId = c.TryGetProperty("parent", out var par) && par.TryGetProperty("id", out var pid) && pid.ValueKind == JsonValueKind.Number
+                ? pid.GetInt32() : null;
+
+            results.Add(new PullRequestComment(id, author, createdOn, updatedOn, inlinePath, inlineLine, parentId, text));
+        }
+        return results;
+    }
+
+    // Add a general (non-inline) PR comment. Bitbucket takes the body as markdown in content.raw.
+    // Pass parentId to reply to an existing comment instead of starting a new thread.
+    public async Task<JsonElement> PostPullRequestCommentAsync(int prId, string text, int? parentId = null)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var fields = new Dictionary<string, object?> { ["content"] = new { raw = text } };
+        if (parentId is not null) fields["parent"] = new { id = parentId.Value };
+
+        var json = JsonSerializer.Serialize(fields);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _bbHttp.PostAsync($"{repoPath}/pullrequests/{prId}/comments", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Comment on pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement.Clone();
+    }
+
     // Bitbucket only auto-applies a repo's default reviewers when a PR is created through the web UI;
     // the create-PR REST endpoint ignores them. To match the UI we resolve them ourselves. The author
     // can't be their own reviewer, so excludeUuid (the PR author) is dropped from the list.
@@ -1078,6 +1144,7 @@ public record IssueStatusInfo(string Status, string? StatusDate);
 public record PipelineStatus(string Status, int BuildNumber);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
 public record PullRequestInfo(int Id, string State, string Title, string Url, string SourceBranch, string? ClosedOn);
+public record PullRequestComment(int Id, string Author, string? CreatedOn, string? UpdatedOn, string? InlinePath, int? InlineLine, int? ParentId, string Text);
 public record ConfluencePageMeta(string Id, string Title, string SpaceId, string Status, int VersionNumber, string? ParentId);
 public record ConfluencePageCreated(string Id, string Title, string Status, string? WebUi, int? Version = null);
 public record ConfluenceAttachment(string Id, string Title, string MediaType, string? DownloadLink);

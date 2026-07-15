@@ -314,6 +314,54 @@ async Task<int> HandleBitbucket(string[] args)
             return 0;
         }
 
+        case "pr-comments" when rest.Length >= 1:
+        {
+            if (!int.TryParse(rest[0], out int listPrId))
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb pr-comments PR_ID   (lists a PR's comments — general and inline — as JSON)");
+                return 1;
+            }
+            var comments = await client.GetPullRequestCommentsAsync(listPrId);
+            Console.WriteLine(JsonSerializer.Serialize(comments, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        case "pr-comment" when rest.Length >= 1:
+        {
+            if (!int.TryParse(rest[0], out int commentPrId))
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb pr-comment PR_ID \"text\" | --body-file FILE [--parent COMMENT_ID]");
+                return 1;
+            }
+            string? commentText = null;
+            int? parentId = null;
+            for (int i = 1; i < rest.Length; i++)
+            {
+                switch (rest[i])
+                {
+                    case "--body-file" when i + 1 < rest.Length:
+                    {
+                        var file = rest[++i];
+                        if (!File.Exists(file)) { Console.Error.WriteLine($"Body file not found: {file}"); return 1; }
+                        commentText = await File.ReadAllTextAsync(file);
+                        break;
+                    }
+                    case "--parent" when i + 1 < rest.Length && int.TryParse(rest[i + 1], out var pv): parentId = pv; i++; break;
+                    default:
+                        if (!rest[i].StartsWith("--")) commentText = rest[i];
+                        break;
+                }
+            }
+            if (string.IsNullOrWhiteSpace(commentText))
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb pr-comment PR_ID \"text\" | --body-file FILE [--parent COMMENT_ID]");
+                return 1;
+            }
+            var posted = await client.PostPullRequestCommentAsync(commentPrId, commentText, parentId);
+            Console.WriteLine(JsonSerializer.Serialize(posted, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
         case "pipeline-log" when rest.Length == 1:
             var failure = await client.GetPipelineFailureAsync(rest[0]);
             if (failure is null)
@@ -514,6 +562,10 @@ int PrintUsage()
                                                      Create a pull request (prints JSON incl. id)
       atl-cli bb pr-edit PR_ID [--title "..."] [--description... | --description-file FILE] [--draft true|false]
                                                      Update a PR's title/description/draft state
+      atl-cli bb pr-comments PR_ID                    List a PR's comments (general + inline) as JSON
+      atl-cli bb pr-comment PR_ID "text"             Add a PR comment (markdown)
+      atl-cli bb pr-comment PR_ID --body-file FILE   Add a PR comment from a file
+                                                     Add [--parent COMMENT_ID] to reply in an existing thread
 
     Confluence:
       atl-cli wiki page <id-or-url>                  Get page content (text)
