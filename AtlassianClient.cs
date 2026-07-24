@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace AtlCli;
@@ -31,12 +32,32 @@ public partial class AtlassianClient
 
     // --- Jira ---
 
-    public async Task<JsonElement> GetIssueAsync(string key)
+    public async Task<JsonNode> GetIssueAsync(string key)
     {
-        var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}?fields=status,summary,description,comment,issuetype,priority,labels,assignee,issuelinks");
+        var pointsField = await ResolveStoryPointsFieldAsync();
+        var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}?fields=status,summary,description,comment,issuetype,priority,labels,assignee,issuelinks,{pointsField}");
         resp.EnsureSuccessStatusCode();
-        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
-        return doc.RootElement;
+        var node = await JsonNode.ParseAsync(await resp.Content.ReadAsStreamAsync())
+                   ?? throw new HttpRequestException($"Empty response fetching issue {key}.");
+
+        // Surface the story-point custom field under a readable name so callers can script
+        // against .fields.storyPoints instead of an instance-specific customfield id. Always
+        // present: null when the field is unset on the issue.
+        if (node["fields"] is JsonObject fields)
+        {
+            // Jira omits a requested field entirely when the id is not valid for the instance.
+            // Reporting that as an unset value would make a misconfigured field indistinguishable
+            // from a genuinely unpointed ticket, so fail instead.
+            if (!fields.ContainsKey(pointsField))
+                throw new InvalidOperationException(
+                    $"Jira did not return {pointsField} for {key} — it is probably not a valid " +
+                    $"field id on {_config.JiraBaseUrl}. Check the Atlassian:StoryPointsField user secret.");
+
+            fields.Remove(pointsField, out var storyPoints);
+            fields["storyPoints"] = storyPoints;
+        }
+
+        return node;
     }
 
     public async Task<string> GetMyAccountIdAsync()
@@ -169,13 +190,59 @@ public partial class AtlassianClient
         }
     }
 
-    // Story Points custom field. customfield_10026 is the field on this instance's edit
-    // screen (confirmed via /rest/api/3/issue/{key}/editmeta — it's the only editable
-    // "Story Points" field, and populated tickets use it). Value is a plain number.
+    // Story points live in a custom field whose id differs per Jira instance, so it cannot be
+    // hardcoded. Company-managed projects name it "Story Points"; team-managed projects use
+    // "Story point estimate" — an instance may expose either or both, hence the ordered probe
+    // and the config override for disambiguation.
+    private static readonly string[] StoryPointsFieldNames = ["Story Points", "Story point estimate"];
+    private string? _storyPointsField;
+
+    private async Task<string> ResolveStoryPointsFieldAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_config.StoryPointsField))
+            return _config.StoryPointsField;
+
+        if (_storyPointsField is not null)
+            return _storyPointsField;
+
+        var resp = await _jiraHttp.GetAsync("/rest/api/3/field");
+        resp.EnsureSuccessStatusCode();
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+
+        var candidates = doc.RootElement.EnumerateArray()
+            .Select(f => (
+                Id: f.TryGetProperty("id", out var id) ? id.GetString() : null,
+                Name: f.TryGetProperty("name", out var name) ? name.GetString() : null))
+            .Where(f => f.Id is not null && StoryPointsFieldNames.Contains(f.Name, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+
+        // Probe in preference order rather than taking the first match, so an instance carrying
+        // both fields resolves to "Story Points" deterministically.
+        foreach (var wanted in StoryPointsFieldNames)
+        {
+            var match = candidates.Where(c => string.Equals(c.Name, wanted, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (match.Count == 1)
+                return _storyPointsField = match[0].Id!;
+
+            // Same name, several ids — only the operator can say which one they mean.
+            if (match.Count > 1)
+                throw new InvalidOperationException(
+                    $"Ambiguous story-point field: {match.Count} fields named \"{wanted}\" " +
+                    $"({string.Join(", ", match.Select(c => c.Id))}). " +
+                    "Set the Atlassian:StoryPointsField user secret to pick one.");
+        }
+
+        throw new InvalidOperationException(
+            $"Could not resolve a story-point field on {_config.JiraBaseUrl} (looked for " +
+            $"{string.Join(" / ", StoryPointsFieldNames.Select(n => $"\"{n}\""))}). " +
+            "Set the Atlassian:StoryPointsField user secret to the custom field id.");
+    }
+
     public async Task SetStoryPointsAsync(string key, decimal points)
     {
+        var field = await ResolveStoryPointsFieldAsync();
         var value = points.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var json = $"{{\"fields\":{{\"customfield_10026\":{value}}}}}";
+        var json = $"{{\"fields\":{{\"{field}\":{value}}}}}";
         var content = new StringContent(json, Encoding.UTF8, "application/json");
         var resp = await _jiraHttp.PutAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}", content);
         if (!resp.IsSuccessStatusCode)

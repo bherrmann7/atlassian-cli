@@ -90,10 +90,12 @@ atl-cli jira status PROJ-101 PROJ-102 PROJ-103
 
 # Jira — full issue details
 atl-cli jira issue PROJ-101
+# Story points come back as fields.storyPoints (null when unset):
+atl-cli jira issue PROJ-101 | jq .fields.storyPoints
 
 # Bitbucket — trigger a pipeline (default branch pipeline, or a named custom: one)
-atl-cli bb pipeline-run PS-3070
-atl-cli bb pipeline-run PS-3070 --selector custom:deploy-code-to-production-express
+atl-cli bb pipeline-run PROJ-101
+atl-cli bb pipeline-run PROJ-101 --selector custom:deploy-to-production
 # Prints the new pipeline JSON (build_number, uuid, state). Requires pipeline:write on the token.
 
 # Jira — transition a ticket

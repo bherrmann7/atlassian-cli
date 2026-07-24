@@ -14,8 +14,8 @@ dotnet pack
 dotnet tool install --global --add-source ./bin/Release/ AtlCli
 
 # Then use from anywhere
-atl-cli jira status PS-2811
-atl-cli bb pipeline PS-2811
+atl-cli jira status PROJ-101
+atl-cli bb pipeline PROJ-101
 atl-cli wiki page 12345
 ```
 

@@ -49,6 +49,11 @@ catch (ArgumentException ex)
     Console.Error.WriteLine($"Invalid input: {ex.Message}");
     return 1;
 }
+catch (InvalidOperationException ex)
+{
+    Console.Error.WriteLine($"Configuration error: {ex.Message}");
+    return 1;
+}
 
 async Task<int> HandleJira(string[] args)
 {
@@ -537,7 +542,7 @@ int PrintUsage()
 
     Jira:
       atl-cli jira status PROJ-101 [PROJ-102 ...]    Batch ticket statuses (JSON)
-      atl-cli jira issue PROJ-101                    Full issue details
+      atl-cli jira issue PROJ-101                    Full issue details (incl. fields.storyPoints)
       atl-cli jira transition PROJ-101 "In Progress" Transition ticket status
       atl-cli jira create --project KEY --type Task --summary "..." [--assignee @me]
                                                      Create an issue (prints JSON incl. key)
@@ -548,7 +553,7 @@ int PrintUsage()
       atl-cli jira describe PROJ-101 --body-file FILE Set the description from a plain-text file
       atl-cli jira describe PROJ-101 --adf-file FILE Set the description from a raw ADF JSON doc (rich formatting)
       atl-cli jira link PROJ-101 PROJ-102 [--type Relates]
-      atl-cli jira points PROJ-101 5                 Set Story Points (customfield_10026)
+      atl-cli jira points PROJ-101 5                 Set Story Points (field auto-detected)
                                                      Link two issues ("relates to" by default)
 
     Bitbucket:
@@ -556,7 +561,7 @@ int PrintUsage()
       atl-cli bb pipeline-log PROJ-101                Failed step + error details
       atl-cli bb pipeline-run BRANCH [--selector custom:PATTERN]
                                                      Trigger a pipeline (default branch pipeline, or a custom: one)
-      atl-cli bb pr PS-2904 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
+      atl-cli bb pr PROJ-101 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
       atl-cli bb pr-body PR_ID                        Print a PR's current description (for get-then-edit round-tripping)
       atl-cli bb pr-create --source BRANCH --title "..." [--dest develop] [--description... | --description-file FILE] [--draft]
                                                      Create a pull request (prints JSON incl. id)

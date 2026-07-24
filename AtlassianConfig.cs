@@ -9,4 +9,8 @@ public class AtlassianConfig
     public string BitbucketWorkspace { get; set; } = "";
     public string BitbucketRepo { get; set; } = "";
 
+    // Optional. The story-point custom field id (e.g. "customfield_10026"). Leave unset to let
+    // the client discover it by name from /rest/api/3/field; set it to pin a specific field when
+    // an instance exposes more than one candidate.
+    public string StoryPointsField { get; set; } = "";
 }
