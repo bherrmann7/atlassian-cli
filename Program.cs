@@ -187,6 +187,36 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "summary" when rest.Length >= 2:
+        {
+            var key = rest[0];
+            string? text = null;
+            for (int i = 1; i < rest.Length; i++)
+            {
+                if (rest[i] == "--body-file" && i + 1 < rest.Length)
+                {
+                    var file = rest[++i];
+                    if (!File.Exists(file)) { Console.Error.WriteLine($"Body file not found: {file}"); return 1; }
+                    // Summary is single-line; trim any trailing newline the file carries.
+                    text = (await File.ReadAllTextAsync(file)).Trim();
+                }
+                else if (!rest[i].StartsWith("--"))
+                {
+                    text ??= rest[i];
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                Console.Error.WriteLine("Usage: atl-cli jira summary KEY \"new title\"  |  KEY --body-file FILE");
+                return 1;
+            }
+
+            await client.SetSummaryAsync(key, text);
+            Console.WriteLine($"{key} summary updated");
+            return 0;
+        }
+
         case "link" when rest.Length >= 2:
         {
             var fromKey = rest[0];
@@ -364,6 +394,18 @@ async Task<int> HandleBitbucket(string[] args)
             }
             var posted = await client.PostPullRequestCommentAsync(commentPrId, commentText, parentId);
             Console.WriteLine(JsonSerializer.Serialize(posted, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        case "pr-resolve" when rest.Length >= 2:
+        {
+            if (!int.TryParse(rest[0], out int resolvePrId) || !int.TryParse(rest[1], out int resolveCommentId))
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb pr-resolve PR_ID COMMENT_ID [--undo]   (COMMENT_ID comes from pr-comments)");
+                return 1;
+            }
+            bool undo = rest.Skip(2).Any(a => a == "--undo");
+            Console.WriteLine(await client.ResolvePullRequestCommentAsync(resolvePrId, resolveCommentId, resolved: !undo));
             return 0;
         }
 
@@ -552,6 +594,8 @@ int PrintUsage()
       atl-cli jira describe PROJ-101 "text"          Set the description (plain text -> ADF; replaces existing)
       atl-cli jira describe PROJ-101 --body-file FILE Set the description from a plain-text file
       atl-cli jira describe PROJ-101 --adf-file FILE Set the description from a raw ADF JSON doc (rich formatting)
+      atl-cli jira summary PROJ-101 "new title"      Set the summary/title (replaces existing)
+      atl-cli jira summary PROJ-101 --body-file FILE Set the summary from a file (first line wins; trimmed)
       atl-cli jira link PROJ-101 PROJ-102 [--type Relates]
       atl-cli jira points PROJ-101 5                 Set Story Points (field auto-detected)
                                                      Link two issues ("relates to" by default)
@@ -571,6 +615,7 @@ int PrintUsage()
       atl-cli bb pr-comment PR_ID "text"             Add a PR comment (markdown)
       atl-cli bb pr-comment PR_ID --body-file FILE   Add a PR comment from a file
                                                      Add [--parent COMMENT_ID] to reply in an existing thread
+      atl-cli bb pr-resolve PR_ID COMMENT_ID        Mark a comment thread resolved ([--undo] reopens it)
 
     Confluence:
       atl-cli wiki page <id-or-url>                  Get page content (text)

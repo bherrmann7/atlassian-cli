@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -168,7 +169,7 @@ public partial class AtlassianClient
         var adf = new { type = "doc", version = 1, content = paragraphs };
         var payload = new { fields = new { description = adf } };
         var json = JsonSerializer.Serialize(payload);
-        await PutDescriptionAsync(key, json);
+        await PutIssueFieldsAsync(key, json, "Set description");
     }
 
     public async Task SetDescriptionAdfAsync(string key, string adfDocJson)
@@ -176,17 +177,25 @@ public partial class AtlassianClient
         // adfDocJson is a raw ADF document body: { "version": 1, "type": "doc", "content": [...] }.
         using (JsonDocument.Parse(adfDocJson)) { }
         var json = $"{{\"fields\":{{\"description\":{adfDocJson}}}}}";
-        await PutDescriptionAsync(key, json);
+        await PutIssueFieldsAsync(key, json, "Set description");
     }
 
-    private async Task PutDescriptionAsync(string key, string json)
+    // Summary is a plain string field, not ADF — no document wrapping, unlike description.
+    public async Task SetSummaryAsync(string key, string summary)
+    {
+        var payload = new { fields = new { summary } };
+        var json = JsonSerializer.Serialize(payload);
+        await PutIssueFieldsAsync(key, json, "Set summary");
+    }
+
+    private async Task PutIssueFieldsAsync(string key, string json, string operation)
     {
         var content = new StringContent(json, Encoding.UTF8, "application/json");
         var resp = await _jiraHttp.PutAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}", content);
         if (!resp.IsSuccessStatusCode)
         {
             var errBody = await resp.Content.ReadAsStringAsync();
-            throw new HttpRequestException($"Set description failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+            throw new HttpRequestException($"{operation} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
         }
     }
 
@@ -983,6 +992,44 @@ public partial class AtlassianClient
         }
         using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
         return doc.RootElement.Clone();
+    }
+
+    // Mark a comment thread resolved (or reopen it with resolved: false).
+    //
+    // Send NO request body. The endpoint takes none, and posting an empty body with
+    // Content-Type: application/json is rejected with a bare 400 Bad Request that says nothing about
+    // why — so PostAsync(url, null) rather than an empty StringContent.
+    //
+    // Resolving something already resolved returns 409, and unresolving something already open returns
+    // 404. Both mean the thread is in the requested state, so they are reported as success: the caller
+    // asked for an end state, not for a transition.
+    public async Task<string> ResolvePullRequestCommentAsync(int prId, int commentId, bool resolved = true)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var url = $"{repoPath}/pullrequests/{prId}/comments/{commentId}/resolve";
+
+        var resp = resolved
+            ? await _bbHttp.PostAsync(url, null)
+            : await _bbHttp.DeleteAsync(url);
+
+        if (resp.IsSuccessStatusCode)
+        {
+            return resolved ? $"Comment {commentId} on pull request {prId} resolved" : $"Comment {commentId} on pull request {prId} reopened";
+        }
+
+        if (resolved && resp.StatusCode == HttpStatusCode.Conflict)
+        {
+            return $"Comment {commentId} on pull request {prId} was already resolved";
+        }
+
+        if (!resolved && resp.StatusCode == HttpStatusCode.NotFound)
+        {
+            return $"Comment {commentId} on pull request {prId} was not resolved";
+        }
+
+        var errBody = await resp.Content.ReadAsStringAsync();
+        var verb = resolved ? "Resolve" : "Reopen";
+        throw new HttpRequestException($"{verb} comment {commentId} on pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
     }
 
     // Bitbucket only auto-applies a repo's default reviewers when a PR is created through the web UI;
