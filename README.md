@@ -100,6 +100,13 @@ atl-cli jira search "assignee = currentUser() ORDER BY created DESC" --limit 5
 # --fields overrides what is requested (default: summary,status,issuetype,assignee).
 # A malformed query returns Jira's parser error rather than an empty result.
 
+# Jira — sprint assignment
+atl-cli jira sprint --list PROJ                 # active/future sprints, with their board
+atl-cli jira sprint PROJ-101 --current          # move into the active sprint
+atl-cli jira sprint PROJ-101 --id 9159          # move into a specific sprint
+# Adding an issue to a sprint needs the Schedule Issues permission on the project;
+# without it Jira answers 403 and says so.
+
 # Bitbucket — trigger a pipeline (default branch pipeline, or a named custom: one)
 atl-cli bb pipeline-run PROJ-101
 atl-cli bb pipeline-run PROJ-101 --selector custom:deploy-to-production

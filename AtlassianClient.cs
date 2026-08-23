@@ -320,6 +320,50 @@ public partial class AtlassianClient
             e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object ? Str(v, child) : null;
     }
 
+    // The Agile API lives under a different path prefix but the same host and auth
+    // as the rest of Jira, so it rides on the same HttpClient.
+    public async Task<List<SprintInfo>> GetSprintsAsync(string projectKey, string state = "active,future")
+    {
+        var boardsResp = await _jiraHttp.GetAsync($"/rest/agile/1.0/board?projectKeyOrId={Uri.EscapeDataString(projectKey)}");
+        await ThrowIfFailed(boardsResp, "list boards");
+        var boardsDoc = await JsonDocument.ParseAsync(await boardsResp.Content.ReadAsStreamAsync());
+
+        var sprints = new List<SprintInfo>();
+        foreach (var board in boardsDoc.RootElement.GetProperty("values").EnumerateArray())
+        {
+            var boardId = board.GetProperty("id").GetInt32();
+            var boardName = board.GetProperty("name").GetString() ?? "";
+
+            // Only scrum boards have sprints; a kanban board answers 400 here.
+            var resp = await _jiraHttp.GetAsync($"/rest/agile/1.0/board/{boardId}/sprint?state={Uri.EscapeDataString(state)}");
+            if (!resp.IsSuccessStatusCode) continue;
+
+            var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+            foreach (var sp in doc.RootElement.GetProperty("values").EnumerateArray())
+                sprints.Add(new SprintInfo(
+                    sp.GetProperty("id").GetInt32(),
+                    sp.GetProperty("name").GetString() ?? "",
+                    sp.GetProperty("state").GetString() ?? "",
+                    boardId, boardName));
+        }
+        return sprints;
+    }
+
+    public async Task AddIssueToSprintAsync(int sprintId, string issueKey)
+    {
+        var body = new JsonObject { ["issues"] = new JsonArray(issueKey) };
+        var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PostAsync($"/rest/agile/1.0/sprint/{sprintId}/issue", content);
+        await ThrowIfFailed(resp, $"add {issueKey} to sprint {sprintId}");
+    }
+
+    private static async Task ThrowIfFailed(HttpResponseMessage resp, string what)
+    {
+        if (resp.IsSuccessStatusCode) return;
+        var err = await resp.Content.ReadAsStringAsync();
+        throw new HttpRequestException($"{what} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {err[..Math.Min(err.Length, 400)]}");
+    }
+
     public async Task<JsonElement> GetTransitionsAsync(string key)
     {
         var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}/transitions");
@@ -1293,6 +1337,7 @@ public partial class AtlassianClient
 
 public record IssueStatusInfo(string Status, string? StatusDate);
 public record IssueSearchHit(string Key, string? Summary, string? Status, string? IssueType, string? Assignee);
+public record SprintInfo(int Id, string Name, string State, int BoardId, string BoardName);
 public record PipelineStatus(string Status, int BuildNumber);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
 public record PullRequestInfo(int Id, string State, string Title, string Url, string SourceBranch, string? ClosedOn);

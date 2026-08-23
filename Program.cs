@@ -74,6 +74,49 @@ async Task<int> HandleJira(string[] args)
             Console.WriteLine(JsonSerializer.Serialize(issue, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
 
+        case "sprint" when rest.Length >= 1:
+            {
+                // --list takes a project key; the other forms take an issue key and
+                // derive the project from its prefix.
+                if (rest[0] == "--list" && rest.Length >= 2)
+                {
+                    var listed = await client.GetSprintsAsync(rest[1].Split('-')[0]);
+                    Console.WriteLine(JsonSerializer.Serialize(listed, new JsonSerializerOptions { WriteIndented = true }));
+                    return 0;
+                }
+
+                string issueKey = rest[0];
+                int sprintId = 0;
+                bool current = false;
+                for (int i = 1; i < rest.Length; i++)
+                {
+                    if (rest[i] == "--id" && i + 1 < rest.Length && int.TryParse(rest[i + 1], out int sid)) { sprintId = sid; i++; }
+                    else if (rest[i] == "--current") current = true;
+                }
+
+                if (current)
+                {
+                    var active = (await client.GetSprintsAsync(issueKey.Split('-')[0], "active")).FirstOrDefault();
+                    if (active is null)
+                    {
+                        Console.Error.WriteLine("No active sprint found for this project.");
+                        return 1;
+                    }
+                    sprintId = active.Id;
+                    Console.Error.WriteLine($"active sprint: {active.Name} (id {active.Id}, board {active.BoardName})");
+                }
+
+                if (sprintId == 0)
+                {
+                    Console.Error.WriteLine("Usage: atl-cli jira sprint KEY --current | --id N  |  atl-cli jira sprint --list PROJ");
+                    return 1;
+                }
+
+                await client.AddIssueToSprintAsync(sprintId, issueKey);
+                Console.WriteLine($"{issueKey} -> sprint {sprintId}");
+                return 0;
+            }
+
         case "search" when rest.Length >= 1:
             {
                 string jql = rest[0];
@@ -602,6 +645,9 @@ int PrintUsage()
       atl-cli jira issue PROJ-101                    Full issue details (incl. fields.storyPoints)
       atl-cli jira search "<jql>" [--limit N] [--fields a,b]
                                                      Search issues by JQL (JSON results)
+      atl-cli jira sprint PROJ-101 --current         Move an issue into the active sprint
+      atl-cli jira sprint PROJ-101 --id 123          Move an issue into a specific sprint
+      atl-cli jira sprint --list PROJ                List active/future sprints (JSON)
       atl-cli jira transition PROJ-101 "In Progress" Transition ticket status
       atl-cli jira create --project KEY --type Task --summary "..." [--assignee @me]
                                                      Create an issue (prints JSON incl. key)
