@@ -283,6 +283,43 @@ public partial class AtlassianClient
         return result;
     }
 
+    public async Task<List<IssueSearchHit>> SearchIssuesAsync(string jql, int maxResults = 25, string? fields = null)
+    {
+        fields ??= "summary,status,issuetype,assignee";
+        var url = $"/rest/api/3/search/jql?jql={Uri.EscapeDataString(jql)}&fields={Uri.EscapeDataString(fields)}&maxResults={maxResults}";
+        var resp = await _jiraHttp.GetAsync(url);
+        if (!resp.IsSuccessStatusCode)
+        {
+            // A malformed JQL comes back 400 with the parser's complaint in errorMessages;
+            // EnsureSuccessStatusCode would discard exactly the part worth reading.
+            var err = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"jira search failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {err[..Math.Min(err.Length, 400)]}");
+        }
+
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        var hits = new List<IssueSearchHit>();
+        if (!doc.RootElement.TryGetProperty("issues", out var issues)) return hits;
+
+        foreach (var issue in issues.EnumerateArray())
+        {
+            var key = issue.GetProperty("key").GetString()!;
+            var f = issue.GetProperty("fields");
+            hits.Add(new IssueSearchHit(
+                key,
+                Str(f, "summary"),
+                Nested(f, "status", "name"),
+                Nested(f, "issuetype", "name"),
+                Nested(f, "assignee", "displayName")));
+        }
+        return hits;
+
+        static string? Str(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+        static string? Nested(JsonElement e, string name, string child) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object ? Str(v, child) : null;
+    }
+
     public async Task<JsonElement> GetTransitionsAsync(string key)
     {
         var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}/transitions");
@@ -1255,6 +1292,7 @@ public partial class AtlassianClient
 }
 
 public record IssueStatusInfo(string Status, string? StatusDate);
+public record IssueSearchHit(string Key, string? Summary, string? Status, string? IssueType, string? Assignee);
 public record PipelineStatus(string Status, int BuildNumber);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
 public record PullRequestInfo(int Id, string State, string Title, string Url, string SourceBranch, string? ClosedOn);

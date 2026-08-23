@@ -74,6 +74,21 @@ async Task<int> HandleJira(string[] args)
             Console.WriteLine(JsonSerializer.Serialize(issue, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
 
+        case "search" when rest.Length >= 1:
+            {
+                string jql = rest[0];
+                int limit = 25;
+                string? searchFields = null;
+                for (int i = 1; i < rest.Length; i++)
+                {
+                    if (rest[i] == "--limit" && i + 1 < rest.Length && int.TryParse(rest[i + 1], out int n)) { limit = n; i++; }
+                    else if (rest[i] == "--fields" && i + 1 < rest.Length) searchFields = rest[++i];
+                }
+                var found = await client.SearchIssuesAsync(jql, limit, searchFields);
+                Console.WriteLine(JsonSerializer.Serialize(found, new JsonSerializerOptions { WriteIndented = true }));
+                return 0;
+            }
+
         case "transition" when rest.Length == 2:
             await client.TransitionIssueAsync(rest[0], rest[1]);
             Console.WriteLine($"{rest[0]} -> {rest[1]}");
@@ -585,6 +600,8 @@ int PrintUsage()
     Jira:
       atl-cli jira status PROJ-101 [PROJ-102 ...]    Batch ticket statuses (JSON)
       atl-cli jira issue PROJ-101                    Full issue details (incl. fields.storyPoints)
+      atl-cli jira search "<jql>" [--limit N] [--fields a,b]
+                                                     Search issues by JQL (JSON results)
       atl-cli jira transition PROJ-101 "In Progress" Transition ticket status
       atl-cli jira create --project KEY --type Task --summary "..." [--assignee @me]
                                                      Create an issue (prints JSON incl. key)

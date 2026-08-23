@@ -93,6 +93,13 @@ atl-cli jira issue PROJ-101
 # Story points come back as fields.storyPoints (null when unset):
 atl-cli jira issue PROJ-101 | jq .fields.storyPoints
 
+# Jira — search by JQL
+atl-cli jira search "project = PROJ AND status = 'In Progress'"
+atl-cli jira search "assignee = currentUser() ORDER BY created DESC" --limit 5
+# [{"Key":"PROJ-101","Summary":"...","Status":"In Progress","IssueType":"Task","Assignee":"..."}]
+# --fields overrides what is requested (default: summary,status,issuetype,assignee).
+# A malformed query returns Jira's parser error rather than an empty result.
+
 # Bitbucket — trigger a pipeline (default branch pipeline, or a named custom: one)
 atl-cli bb pipeline-run PROJ-101
 atl-cli bb pipeline-run PROJ-101 --selector custom:deploy-to-production
