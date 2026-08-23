@@ -101,6 +101,10 @@ atl-cli bb pipeline-run PROJ-101 --selector custom:deploy-to-production
 # Jira — transition a ticket
 atl-cli jira transition PROJ-101 "In Progress"
 
+# Jira — rename a ticket (summary is a plain string, not ADF)
+atl-cli jira summary PROJ-101 "New title goes here"
+atl-cli jira summary PROJ-101 --body-file /tmp/title.txt
+
 # Bitbucket — pipeline status per branch
 atl-cli bb pipeline PROJ-101 PROJ-102
 # {"PROJ-101":{"Status":"FAILED","BuildNumber":7633}}
