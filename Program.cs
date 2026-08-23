@@ -69,10 +69,40 @@ async Task<int> HandleJira(string[] args)
             Console.WriteLine(JsonSerializer.Serialize(statuses));
             return 0;
 
-        case "issue" when rest.Length == 1:
+        case "issue" when rest.Length >= 1:
+        {
             var issue = await client.GetIssueAsync(rest[0]);
-            Console.WriteLine(JsonSerializer.Serialize(issue, new JsonSerializerOptions { WriteIndented = true }));
+            if (!rest.Contains("--text"))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(issue, new JsonSerializerOptions { WriteIndented = true }));
+                return 0;
+            }
+
+            var el = JsonDocument.Parse(issue!.ToJsonString()).RootElement;
+            var fields = el.GetProperty("fields");
+            string? Field(string name) =>
+                fields.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object
+                && v.TryGetProperty("name", out var nm) ? nm.GetString() : null;
+
+            Console.WriteLine($"# {rest[0]}  {(fields.TryGetProperty("summary", out var sm) ? sm.GetString() : null)}");
+            Console.WriteLine($"_{Field("issuetype")} · {Field("status")} · {Field("priority")}_");
+
+            if (fields.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.Object)
+                Console.WriteLine("\n" + Adf.ToMarkdown(desc));
+
+            if (fields.TryGetProperty("comment", out var cw) && cw.ValueKind == JsonValueKind.Object
+                && cw.TryGetProperty("comments", out var cs) && cs.ValueKind == JsonValueKind.Array)
+                foreach (var cm in cs.EnumerateArray())
+                {
+                    var who = cm.TryGetProperty("author", out var au) && au.TryGetProperty("displayName", out var dn)
+                        ? dn.GetString() : "?";
+                    var when = cm.TryGetProperty("created", out var cr) ? cr.GetString()?[..10] : "";
+                    Console.WriteLine($"\n--- comment · {who} · {when}\n");
+                    if (cm.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.Object)
+                        Console.WriteLine(Adf.ToMarkdown(body));
+                }
             return 0;
+        }
 
         case "sprint" when rest.Length >= 1:
             {
@@ -165,6 +195,7 @@ async Task<int> HandleJira(string[] args)
             var key = rest[0];
             string? text = null;
             string? adfFile = null;
+            string? adfJsonFromMd = null;
             for (int i = 1; i < rest.Length; i++)
             {
                 if (rest[i] == "--body-file" && i + 1 < rest.Length)
@@ -178,6 +209,12 @@ async Task<int> HandleJira(string[] args)
                     adfFile = rest[++i];
                     if (!File.Exists(adfFile)) { Console.Error.WriteLine($"ADF file not found: {adfFile}"); return 1; }
                 }
+                else if (rest[i] == "--md-file" && i + 1 < rest.Length)
+                {
+                    var mdPath = rest[++i];
+                    if (!File.Exists(mdPath)) { Console.Error.WriteLine($"Markdown file not found: {mdPath}"); return 1; }
+                    adfJsonFromMd = Adf.FromMarkdown(await File.ReadAllTextAsync(mdPath));
+                }
                 else if (!rest[i].StartsWith("--"))
                 {
                     text ??= rest[i];
@@ -185,7 +222,11 @@ async Task<int> HandleJira(string[] args)
             }
 
             JsonElement posted;
-            if (adfFile is not null)
+            if (adfJsonFromMd is not null)
+            {
+                posted = await client.CreateCommentAdfAsync(key, adfJsonFromMd);
+            }
+            else if (adfFile is not null)
             {
                 var adfJson = await File.ReadAllTextAsync(adfFile);
                 posted = await client.CreateCommentAdfAsync(key, adfJson);
@@ -208,6 +249,7 @@ async Task<int> HandleJira(string[] args)
             var key = rest[0];
             string? text = null;
             string? adfFile = null;
+            string? adfJsonFromMd = null;
             for (int i = 1; i < rest.Length; i++)
             {
                 if (rest[i] == "--body-file" && i + 1 < rest.Length)
@@ -221,13 +263,23 @@ async Task<int> HandleJira(string[] args)
                     adfFile = rest[++i];
                     if (!File.Exists(adfFile)) { Console.Error.WriteLine($"ADF file not found: {adfFile}"); return 1; }
                 }
+                else if (rest[i] == "--md-file" && i + 1 < rest.Length)
+                {
+                    var mdPath = rest[++i];
+                    if (!File.Exists(mdPath)) { Console.Error.WriteLine($"Markdown file not found: {mdPath}"); return 1; }
+                    adfJsonFromMd = Adf.FromMarkdown(await File.ReadAllTextAsync(mdPath));
+                }
                 else if (!rest[i].StartsWith("--"))
                 {
                     text ??= rest[i];
                 }
             }
 
-            if (adfFile is not null)
+            if (adfJsonFromMd is not null)
+            {
+                await client.SetDescriptionAdfAsync(key, adfJsonFromMd);
+            }
+            else if (adfFile is not null)
             {
                 var adfJson = await File.ReadAllTextAsync(adfFile);
                 await client.SetDescriptionAdfAsync(key, adfJson);
@@ -643,6 +695,7 @@ int PrintUsage()
     Jira:
       atl-cli jira status PROJ-101 [PROJ-102 ...]    Batch ticket statuses (JSON)
       atl-cli jira issue PROJ-101                    Full issue details (incl. fields.storyPoints)
+      atl-cli jira issue PROJ-101 --text             Description + comments rendered as markdown
       atl-cli jira search "<jql>" [--limit N] [--fields a,b]
                                                      Search issues by JQL (JSON results)
       atl-cli jira sprint PROJ-101 --current         Move an issue into the active sprint
@@ -654,9 +707,11 @@ int PrintUsage()
       atl-cli jira comment PROJ-101 "text"           Add a comment (plain text -> ADF)
       atl-cli jira comment PROJ-101 --body-file FILE Add a comment from a plain-text file
       atl-cli jira comment PROJ-101 --adf-file FILE  Add a comment from a raw ADF JSON doc (rich formatting)
+      atl-cli jira comment PROJ-101 --md-file FILE   Add a comment from markdown (converted to ADF)
       atl-cli jira describe PROJ-101 "text"          Set the description (plain text -> ADF; replaces existing)
       atl-cli jira describe PROJ-101 --body-file FILE Set the description from a plain-text file
       atl-cli jira describe PROJ-101 --adf-file FILE Set the description from a raw ADF JSON doc (rich formatting)
+      atl-cli jira describe PROJ-101 --md-file FILE  Set the description from markdown (converted to ADF)
       atl-cli jira summary PROJ-101 "new title"      Set the summary/title (replaces existing)
       atl-cli jira summary PROJ-101 --body-file FILE Set the summary from a file (first line wins; trimmed)
       atl-cli jira link PROJ-101 PROJ-102 [--type Relates]

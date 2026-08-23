@@ -93,6 +93,16 @@ atl-cli jira issue PROJ-101
 # Story points come back as fields.storyPoints (null when unset):
 atl-cli jira issue PROJ-101 | jq .fields.storyPoints
 
+# Jira — read a ticket as markdown, edit it, put it back
+atl-cli jira issue PROJ-101 --text > ticket.md   # description + comments, rendered
+$EDITOR ticket.md
+atl-cli jira describe PROJ-101 --md-file ticket.md
+atl-cli jira comment PROJ-101 --md-file note.md
+# Markdown subset: headings, paragraphs, bullet/ordered lists, tables, fenced code,
+# block quotes, rules, and inline `code`, **bold**, *italic*, [links](url).
+# The conversion round-trips: --text of a doc written with --md-file returns the same markdown.
+# Mentions render as @Name when reading; writing one still needs --adf-file with an accountId.
+
 # Jira — search by JQL
 atl-cli jira search "project = PROJ AND status = 'In Progress'"
 atl-cli jira search "assignee = currentUser() ORDER BY created DESC" --limit 5
