@@ -421,6 +421,33 @@ async Task<int> HandleBitbucket(string[] args)
             Console.WriteLine(JsonSerializer.Serialize(prs, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
 
+        case "upload" when rest.Length >= 1:
+        {
+            var files = rest.Where(a => !a.StartsWith("--")).ToArray();
+            if (files.Length == 0)
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb upload FILE [FILE ...]   (uploads to repo Downloads, prints the URLs)");
+                return 1;
+            }
+
+            var missing = files.Where(f => !File.Exists(f)).ToArray();
+            if (missing.Length > 0)
+            {
+                foreach (var f in missing) Console.Error.WriteLine($"File not found: {f}");
+                return 1;
+            }
+
+            foreach (var file in files)
+            {
+                var url = await client.UploadDownloadAsync(file);
+                // Print the markdown too: the whole reason to upload here is to paste a picture into
+                // a PR description, and that needs the image form, not the bare link.
+                Console.WriteLine(url);
+                Console.WriteLine($"![{Path.GetFileNameWithoutExtension(file)}]({url})");
+            }
+            return 0;
+        }
+
         case "pr-body" when rest.Length >= 1:
         {
             if (!int.TryParse(rest[0], out int bodyPrId))
@@ -762,6 +789,7 @@ int PrintUsage()
                                                      Trigger a pipeline (default branch pipeline, or a custom: one)
       atl-cli bb pr PROJ-101 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
       atl-cli bb pr-body PR_ID                        Print a PR's current description (for get-then-edit round-tripping)
+      atl-cli bb upload FILE [FILE ...]               Upload to repo Downloads; prints the URL and markdown (for PR images)
       atl-cli bb pr-create --source BRANCH --title "..." [--dest develop] [--description... | --description-file FILE] [--draft]
                                                      Create a pull request (prints JSON incl. id)
       atl-cli bb pr-edit PR_ID [--title "..."] [--description... | --description-file FILE] [--draft true|false]

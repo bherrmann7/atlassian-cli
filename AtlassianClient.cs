@@ -210,6 +210,40 @@ public partial class AtlassianClient
         _ => "application/octet-stream"
     };
 
+    /// <summary>
+    /// Uploads a file to the repository's Downloads area and returns the URL that serves it.
+    /// </summary>
+    /// <remarks>
+    /// Bitbucket has no attachment concept for pull requests: a description can only reference an
+    /// image that is already hosted somewhere the reviewer's browser can reach. Downloads is the
+    /// only such place inside the repository itself, so it is what a PR image has to use. The
+    /// returned URL is on bitbucket.org rather than api.bitbucket.org — the API host serves JSON and
+    /// a redirect that markdown will not render.
+    /// </remarks>
+    public async Task<string> UploadDownloadAsync(string filePath)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+
+        using var form = new MultipartFormDataContent();
+        await using var stream = File.OpenRead(filePath);
+        var fileContent = new StreamContent(stream);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(GuessMediaType(filePath));
+
+        // The field name here is "files", plural — unlike Jira's "file". Getting it wrong returns
+        // 400 with an empty error body, which gives no hint about the field at all.
+        var fileName = Path.GetFileName(filePath);
+        form.Add(fileContent, "files", fileName);
+
+        var resp = await _bbHttp.PostAsync($"{repoPath}/downloads", form);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Upload failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+
+        return $"https://bitbucket.org/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}/downloads/{Uri.EscapeDataString(fileName)}";
+    }
+
     public async Task SetDescriptionAsync(string key, string text)
     {
         // Same plain-text -> ADF wrapping as CreateCommentAsync: one paragraph per line.

@@ -124,6 +124,12 @@ atl-cli jira sprint PROJ-101 --id 9159          # move into a specific sprint
 # Adding an issue to a sprint needs the Schedule Issues permission on the project;
 # without it Jira answers 403 and says so.
 
+# Bitbucket — upload a file to repo Downloads, to embed an image in a PR description
+atl-cli bb upload screenshot.png
+# Prints the URL and the ready-to-paste markdown. A pull request has no attachment concept:
+# a description can only reference an image already hosted somewhere the reviewer can reach,
+# and Downloads is the only such place inside the repository.
+
 # Bitbucket — trigger a pipeline (default branch pipeline, or a named custom: one)
 atl-cli bb pipeline-run PROJ-101
 atl-cli bb pipeline-run PROJ-101 --selector custom:deploy-to-production
