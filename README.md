@@ -103,6 +103,13 @@ atl-cli jira comment PROJ-101 --md-file note.md
 # The conversion round-trips: --text of a doc written with --md-file returns the same markdown.
 # Mentions render as @Name when reading; writing one still needs --adf-file with an accountId.
 
+# Jira — attach files (screenshots, logs, exports)
+atl-cli jira attach PROJ-101 screenshot.png
+atl-cli jira attach PROJ-101 before.png after.png run.log
+# Images are sent with a real image content type, so Jira renders them inline in the ticket
+# rather than listing them as anonymous downloads. Every file is checked to exist before any
+# of them upload, so a typo cannot leave a half-attached ticket behind.
+
 # Jira — search by JQL
 atl-cli jira search "project = PROJ AND status = 'In Progress'"
 atl-cli jira search "assignee = currentUser() ORDER BY created DESC" --limit 5

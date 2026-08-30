@@ -36,7 +36,7 @@ public partial class AtlassianClient
     public async Task<JsonNode> GetIssueAsync(string key)
     {
         var pointsField = await ResolveStoryPointsFieldAsync();
-        var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}?fields=status,summary,description,comment,issuetype,priority,labels,assignee,issuelinks,{pointsField}");
+        var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}?fields=status,summary,description,comment,issuetype,priority,labels,assignee,issuelinks,attachment,{pointsField}");
         resp.EnsureSuccessStatusCode();
         var node = await JsonNode.ParseAsync(await resp.Content.ReadAsStreamAsync())
                    ?? throw new HttpRequestException($"Empty response fetching issue {key}.");
@@ -156,6 +156,59 @@ public partial class AtlassianClient
         var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
         return doc.RootElement;
     }
+
+    public async Task<JsonElement> AttachToIssueAsync(string key, string filePath)
+    {
+        // Jira's attachment endpoint is the one Jira API that is not JSON in: it takes a multipart
+        // body, and it rejects the request unless X-Atlassian-Token: no-check is present. That
+        // header is Atlassian's XSRF guard for form-style posts; without it the call fails with 403
+        // and a message about the check, not about permissions, which is misleading to debug.
+        using var form = new MultipartFormDataContent();
+        await using var stream = File.OpenRead(filePath);
+        var fileContent = new StreamContent(stream);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(GuessMediaType(filePath));
+
+        // The field must be named "file"; the endpoint ignores any other name and reports success
+        // with an empty array, which looks like a silent no-op rather than an error.
+        form.Add(fileContent, "file", Path.GetFileName(filePath));
+
+        using var req = new HttpRequestMessage(
+            HttpMethod.Post, $"/rest/api/3/issue/{Uri.EscapeDataString(key)}/attachments")
+        {
+            Content = form
+        };
+        req.Headers.Add("X-Atlassian-Token", "no-check");
+
+        var resp = await _jiraHttp.SendAsync(req);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Attach failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement;
+    }
+
+    /// <summary>
+    /// Content type from the file extension. Jira stores whatever it is told, but it only renders an
+    /// attachment inline — which is the point of attaching a screenshot — when the type is a real
+    /// image type rather than the octet-stream default.
+    /// </summary>
+    private static string GuessMediaType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".png" => "image/png",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".gif" => "image/gif",
+        ".webp" => "image/webp",
+        ".svg" => "image/svg+xml",
+        ".pdf" => "application/pdf",
+        ".txt" or ".log" => "text/plain",
+        ".md" => "text/markdown",
+        ".json" => "application/json",
+        ".csv" => "text/csv",
+        _ => "application/octet-stream"
+    };
 
     public async Task SetDescriptionAsync(string key, string text)
     {

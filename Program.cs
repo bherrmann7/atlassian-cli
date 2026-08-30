@@ -244,6 +244,42 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "attach" when rest.Length >= 2:
+        {
+            var key = rest[0];
+            var files = rest.Skip(1).Where(a => !a.StartsWith("--")).ToArray();
+            if (files.Length == 0)
+            {
+                Console.Error.WriteLine("Usage: atl-cli jira attach KEY FILE [FILE ...]");
+                return 1;
+            }
+
+            var missing = files.Where(f => !File.Exists(f)).ToArray();
+            if (missing.Length > 0)
+            {
+                // Checked up front so a typo in the third of three files does not leave the first two
+                // already attached, which would have to be undone by hand in the browser.
+                foreach (var f in missing) Console.Error.WriteLine($"File not found: {f}");
+                return 1;
+            }
+
+            var attached = new List<JsonElement>();
+            foreach (var file in files)
+            {
+                var result = await client.AttachToIssueAsync(key, file);
+                foreach (var a in result.EnumerateArray()) attached.Add(a);
+            }
+
+            foreach (var a in attached)
+            {
+                var filename = a.TryGetProperty("filename", out var fn) ? fn.GetString() : "(unnamed)";
+                var id = a.TryGetProperty("id", out var i) ? i.GetString() : "?";
+                var size = a.TryGetProperty("size", out var s) ? s.GetInt64() : 0;
+                Console.WriteLine($"{key} <- {filename}  (id {id}, {size} bytes)");
+            }
+            return 0;
+        }
+
         case "describe" when rest.Length >= 2:
         {
             var key = rest[0];
@@ -708,6 +744,7 @@ int PrintUsage()
       atl-cli jira comment PROJ-101 --body-file FILE Add a comment from a plain-text file
       atl-cli jira comment PROJ-101 --adf-file FILE  Add a comment from a raw ADF JSON doc (rich formatting)
       atl-cli jira comment PROJ-101 --md-file FILE   Add a comment from markdown (converted to ADF)
+      atl-cli jira attach PROJ-101 shot.png [more...] Attach one or more files (images render inline)
       atl-cli jira describe PROJ-101 "text"          Set the description (plain text -> ADF; replaces existing)
       atl-cli jira describe PROJ-101 --body-file FILE Set the description from a plain-text file
       atl-cli jira describe PROJ-101 --adf-file FILE Set the description from a raw ADF JSON doc (rich formatting)
