@@ -1459,9 +1459,15 @@ public partial class AtlassianClient
 
         if (failedStepUuid is null) return null;
 
-        // Get the log
-        var logResp = await _bbHttp.GetAsync(
+        // Get the log. This endpoint serves plain text and rejects the client-wide
+        // default of Accept: application/json with 406, so ask for anything. It
+        // answers with a 307 to a storage host; HttpClient follows that and drops
+        // the Authorization header on the cross-host hop, which is what we want.
+        var logReq = new HttpRequestMessage(HttpMethod.Get,
             $"{repoPath}/pipelines/{Uri.EscapeDataString(pipelineUuid)}/steps/{Uri.EscapeDataString(failedStepUuid)}/log");
+        logReq.Headers.Accept.Clear();
+        logReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+        var logResp = await _bbHttp.SendAsync(logReq);
         logResp.EnsureSuccessStatusCode();
         var log = await logResp.Content.ReadAsStringAsync();
 
