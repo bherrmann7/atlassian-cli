@@ -1326,6 +1326,27 @@ public partial class AtlassianClient
         return doc.RootElement;
     }
 
+    // Bitbucket pages the steps endpoint (default 10, max 100) and a full deploy
+    // pipeline can run to 45+ steps, so follow `next` -- a single page silently
+    // hides every later step. Elements are cloned so they outlive the JsonDocument.
+    private async Task<List<JsonElement>> GetPipelineStepsAsync(string pipelineRef)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var steps = new List<JsonElement>();
+        var url = $"{repoPath}/pipelines/{Uri.EscapeDataString(pipelineRef)}/steps/?pagelen=100";
+        while (url is not null)
+        {
+            var resp = await _bbHttp.GetAsync(url);
+            resp.EnsureSuccessStatusCode();
+            using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+            var root = doc.RootElement;
+            foreach (var step in root.GetProperty("values").EnumerateArray())
+                steps.Add(step.Clone());
+            url = root.TryGetProperty("next", out var next) && next.ValueKind == JsonValueKind.String ? next.GetString() : null;
+        }
+        return steps;
+    }
+
     public async Task<PipelineFailure?> GetPipelineFailureAsync(string branch)
     {
         var data = await GetPipelinesAsync();
@@ -1354,14 +1375,12 @@ public partial class AtlassianClient
 
         // Get steps to find the failed one
         var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
-        var stepsResp = await _bbHttp.GetAsync($"{repoPath}/pipelines/{Uri.EscapeDataString(pipelineUuid)}/steps/?pagelen=30");
-        stepsResp.EnsureSuccessStatusCode();
-        var stepsDoc = await JsonDocument.ParseAsync(await stepsResp.Content.ReadAsStreamAsync());
+        var steps = await GetPipelineStepsAsync(pipelineUuid);
 
         string? failedStepUuid = null;
         string? failedStepName = null;
 
-        foreach (var step in stepsDoc.RootElement.GetProperty("values").EnumerateArray())
+        foreach (var step in steps)
         {
             var state = step.GetProperty("state");
             if (state.GetProperty("name").GetString() == "COMPLETED" &&
