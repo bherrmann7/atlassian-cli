@@ -33,5 +33,7 @@ Single-project CLI (`net10.0`), three files:
 
 - Jira and Confluence share the same base URL and token (`JiraToken`). Bitbucket uses a separate scoped token (`BitbucketToken`).
 - Pipeline lookups fetch the 50 most recent pipelines and filter client-side by branch name — there is no server-side branch filter.
+- A pipeline parked on a manual gate reports pipeline-level `state.stage.name == "PAUSED"`. That is what `pipeline-watch` keys on. A step's `trigger.type == "manual"` plus `state.name == "PENDING"` is NOT a gate: every later manual step looks like that from the moment the pipeline starts.
+- The steps endpoint pages (default 10, max 100). Deploy pipelines run to 45+ steps, so step scans must follow `next` — see `GetPipelineStepsAsync`.
 - The `pipeline-log` command parses raw build logs for `error CS` / `error TS` patterns to extract compiler errors.
 - Confluence `wiki page` converts storage-format HTML to markdown-like text by default; `--raw` returns the original HTML.

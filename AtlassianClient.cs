@@ -1326,6 +1326,70 @@ public partial class AtlassianClient
         return doc.RootElement;
     }
 
+    // A single observation of a pipeline, for pipeline-watch.
+    //
+    // Bitbucket reports a pipeline parked on a manual gate as IN_PROGRESS with a
+    // *pipeline-level* stage of PAUSED. That is the authoritative signal, so it
+    // alone decides Paused. The steps are consulted only to name the gate, and
+    // only once the pipeline already says it is paused.
+    //
+    // Do NOT infer a gate from "step trigger is manual and step state is PENDING":
+    // every downstream manual step looks like that from the moment the pipeline
+    // starts, so that test fires while the build is still compiling and the
+    // deploy button is still greyed out.
+    public async Task<PipelineWatchState?> GetPipelineStateAsync(int buildNumber)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var resp = await _bbHttp.GetAsync($"{repoPath}/pipelines/{buildNumber}");
+        if (!resp.IsSuccessStatusCode) return null;   // transient; the caller retries
+
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        if (!doc.RootElement.TryGetProperty("state", out var state)) return null;
+
+        var name = state.TryGetProperty("name", out var n) ? n.GetString() : null;
+        if (name is null) return null;
+
+        string? Nested(string prop) =>
+            state.TryGetProperty(prop, out var o) && o.ValueKind == JsonValueKind.Object &&
+            o.TryGetProperty("name", out var v) ? v.GetString() : null;
+
+        var stage = Nested("stage");
+        var result = Nested("result");
+
+        var paused = name is "PAUSED" or "HALTED"
+                  || stage is "PAUSED" or "HALTED"
+                  || result == "HALTED";
+
+        var pausedStep = paused ? await FindPausedStepAsync(buildNumber) : null;
+
+        return new PipelineWatchState(
+            buildNumber, name, stage, result, pausedStep,
+            paused, name == "COMPLETED");
+    }
+
+    // Name of the step sitting on the gate. The one waiting step carries a
+    // step-level stage of PAUSED; later gates are still plain PENDING.
+    private async Task<string?> FindPausedStepAsync(int buildNumber)
+    {
+        foreach (var step in await GetPipelineStepsAsync(buildNumber.ToString()))
+        {
+            if (!step.TryGetProperty("state", out var st)) continue;
+
+            string? Nested(string prop) =>
+                st.TryGetProperty(prop, out var o) && o.ValueKind == JsonValueKind.Object &&
+                o.TryGetProperty("name", out var v) ? v.GetString() : null;
+
+            var name = st.TryGetProperty("name", out var n) ? n.GetString() : null;
+            if (Nested("stage") is "PAUSED" or "HALTED"
+                || name is "PAUSED" or "HALTED"
+                || Nested("result") == "HALTED")
+            {
+                return step.TryGetProperty("name", out var sn) ? sn.GetString() : null;
+            }
+        }
+        return null;
+    }
+
     // Bitbucket pages the steps endpoint (default 10, max 100) and a full deploy
     // pipeline can run to 45+ steps, so follow `next` -- a single page silently
     // hides every later step. Elements are cloned so they outlive the JsonDocument.
@@ -1446,6 +1510,9 @@ public record IssueSearchHit(string Key, string? Summary, string? Status, string
 public record SprintInfo(int Id, string Name, string State, int BoardId, string BoardName);
 public record PipelineStatus(string Status, int BuildNumber);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
+public record PipelineWatchState(
+    int BuildNumber, string State, string? Stage, string? Result, string? PausedStep,
+    bool Paused, bool Finished);
 public record PullRequestInfo(int Id, string State, string Title, string Url, string SourceBranch, string? ClosedOn);
 public record PullRequestComment(int Id, string Author, string? CreatedOn, string? UpdatedOn, string? InlinePath, int? InlineLine, int? ParentId, string Text);
 public record ConfluencePageMeta(string Id, string Title, string SpaceId, string Status, int VersionNumber, string? ParentId);

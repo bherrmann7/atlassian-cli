@@ -135,6 +135,18 @@ atl-cli bb pipeline-run PROJ-101
 atl-cli bb pipeline-run PROJ-101 --selector custom:deploy-to-production
 # Prints the new pipeline JSON (build_number, uuid, state). Requires pipeline:write on the token.
 
+# Bitbucket — watch a pipeline until it ends or stops at a manual gate
+atl-cli bb pipeline-watch PROJ-101
+atl-cli bb pipeline-watch --build 11777 --interval 30
+# Streams one JSON line per state change; exits 0 successful, 2 failed, 75 waiting on a gate.
+# --wait-through-gates keeps polling past a gate instead of exiting.
+# Nag out loud on a Mac until someone clicks Deploy:
+#   while true; do
+#     atl-cli bb pipeline-watch PROJ-101; status=$?
+#     [ $status -eq 75 ] || break
+#     say "Need to deploy"; sleep 10
+#   done
+
 # Jira — transition a ticket
 atl-cli jira transition PROJ-101 "In Progress"
 

@@ -592,6 +592,94 @@ async Task<int> HandleBitbucket(string[] args)
             Console.WriteLine(JsonSerializer.Serialize(failure, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
 
+        // Poll one pipeline until it finishes or parks on a manual gate.
+        // Emits one JSON line per state change (NDJSON) so callers can react as
+        // it runs. Exit: 0 finished successfully, 2 finished otherwise,
+        // 75 parked on a gate, 1 usage/not found.
+        case "pipeline-watch" when rest.Length >= 1:
+        {
+            int? watchBuild = null;
+            string? watchBranch = null;
+            var intervalSec = 15;
+            var throughGates = false;
+
+            for (int i = 0; i < rest.Length; i++)
+            {
+                string? Val(string flag) =>
+                    rest[i] == flag && i + 1 < rest.Length ? rest[++i]
+                    : rest[i].StartsWith(flag + "=") ? rest[i][(flag.Length + 1)..]
+                    : null;
+
+                if (Val("--build") is { } b)
+                {
+                    if (!int.TryParse(b, out var parsed))
+                    {
+                        Console.Error.WriteLine($"--build expects a build number, got '{b}'");
+                        return 1;
+                    }
+                    watchBuild = parsed;
+                }
+                else if (Val("--interval") is { } iv)
+                {
+                    if (!int.TryParse(iv, out var parsed) || parsed < 1)
+                    {
+                        Console.Error.WriteLine($"--interval expects seconds, got '{iv}'");
+                        return 1;
+                    }
+                    intervalSec = parsed;
+                }
+                else if (rest[i] == "--wait-through-gates") throughGates = true;
+                else if (!rest[i].StartsWith("--")) watchBranch = rest[i];
+            }
+
+            if (watchBuild is null)
+            {
+                if (watchBranch is null)
+                {
+                    Console.Error.WriteLine("pipeline-watch needs a branch or --build N");
+                    return 1;
+                }
+                var found = await client.GetPipelineStatusesAsync([watchBranch]);
+                if (!found.TryGetValue(watchBranch, out var st))
+                {
+                    Console.Error.WriteLine($"No pipeline found for {watchBranch}");
+                    return 1;
+                }
+                watchBuild = st.BuildNumber;
+            }
+
+            var jsonOpts = new JsonSerializerOptions();
+            string? lastLine = null;
+
+            while (true)
+            {
+                var snapshot = await client.GetPipelineStateAsync(watchBuild.Value);
+                if (snapshot is null)
+                {
+                    // Network blip or a transient API error: keep watching.
+                    await Task.Delay(TimeSpan.FromSeconds(intervalSec));
+                    continue;
+                }
+
+                // One line per change, not per poll, so a long wait stays quiet.
+                var line = JsonSerializer.Serialize(snapshot, jsonOpts);
+                if (line != lastLine)
+                {
+                    Console.WriteLine(line);
+                    Console.Out.Flush();
+                    lastLine = line;
+                }
+
+                if (snapshot.Finished)
+                    return snapshot.Result == "SUCCESSFUL" ? 0 : 2;
+
+                if (snapshot.Paused && !throughGates)
+                    return 75;
+
+                await Task.Delay(TimeSpan.FromSeconds(intervalSec));
+            }
+        }
+
         case "pipeline-run" when rest.Length >= 1:
         {
             var runBranch = rest[0];
@@ -785,6 +873,10 @@ int PrintUsage()
     Bitbucket:
       atl-cli bb pipeline PROJ-101 [PROJ-102 ...]    Pipeline status per branch (JSON)
       atl-cli bb pipeline-log PROJ-101                Failed step + error details
+      atl-cli bb pipeline-watch BRANCH [--build N] [--interval S] [--wait-through-gates]
+                                                     Poll until the pipeline ends or parks on a manual gate.
+                                                     Streams one JSON line per state change.
+                                                     Exit 0 ok, 2 failed, 75 waiting on a gate.
       atl-cli bb pipeline-run BRANCH [--selector custom:PATTERN]
                                                      Trigger a pipeline (default branch pipeline, or a custom: one)
       atl-cli bb pr PROJ-101 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
