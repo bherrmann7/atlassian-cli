@@ -3,8 +3,12 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using AtlCli;
 
+// User secrets hold the durable per-developer setup; environment variables override
+// them per invocation, so a single install can target more than one repo or workspace.
+// Standard .NET binding applies: Atlassian__BitbucketRepo=skills atl-cli bb pr-create ...
 var config = new ConfigurationBuilder()
     .AddUserSecrets<AtlassianConfig>()
+    .AddEnvironmentVariables()
     .Build();
 
 var atlConfig = new AtlassianConfig();

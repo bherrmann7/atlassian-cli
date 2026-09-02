@@ -67,6 +67,24 @@ dotnet user-secrets set "Atlassian:BitbucketRepo" "your-repo"
 
 User secrets are stored outside the project directory (in `~/.microsoft/usersecrets/`) and are never committed to source control. Works on macOS, Windows, and Linux.
 
+### Overriding settings per invocation
+
+User secrets hold your durable setup. Any of them can be overridden for a single command with an environment variable, so one install can target more than one repo or workspace. This matters most for `BitbucketRepo`, which otherwise pins the tool to a single repository:
+
+```bash
+# Open a PR against a different repo in the same workspace
+Atlassian__BitbucketRepo=skills atl-cli bb pr-create \
+  --source feature/my-branch --title "..." --dest main
+
+# Point at another workspace entirely
+Atlassian__BitbucketWorkspace=other-org Atlassian__BitbucketRepo=their-repo \
+  atl-cli bb pr feature/my-branch
+```
+
+The naming follows standard .NET configuration binding: the section name, a **double** underscore, then the property — `Atlassian__BitbucketRepo`, `Atlassian__BitbucketWorkspace`, `Atlassian__JiraBaseUrl`, and so on. A single underscore will not work.
+
+Environment variables are read after user secrets, so an unset variable leaves the stored secret in place. Export one in a shell to retarget a whole session, or prefix a single command as above.
+
 ### 3. Install
 
 ```bash
