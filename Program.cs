@@ -3,6 +3,16 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using AtlCli;
 
+// --help is answered before config is read or any request is built, so it works in a fresh
+// checkout with no credentials. It prints to STDOUT and exits 0: help is the thing the caller
+// asked for, not a failure, and a tool that answers --help on stderr with a non-zero code is
+// hostile to both `atl-cli ... --help | grep` and to an agent deciding whether a flag exists.
+// PrintUsage keeps stderr/1 for the "you invoked this wrong" path, which IS a failure.
+if (args.Any(a => a is "--help" or "-h"))
+{
+    return PrintHelp(args.Where(a => a is not ("--help" or "-h")).ToArray());
+}
+
 // User secrets hold the durable per-developer setup; environment variables override
 // them per invocation, so a single install can target more than one repo or workspace.
 // Standard .NET binding applies: Atlassian__BitbucketRepo=skills atl-cli bb pr-create ...
@@ -910,4 +920,99 @@ int PrintUsage()
       --as-curl                                      Print the curl command instead of executing
     """);
     return 1;
+}
+
+// Per-command detail. Keyed "<service> <command>"; only verbs whose FLAGS are worth spelling out
+// need an entry -- everything else falls back to the full usage, which already carries a one-line
+// summary per verb. Placeholders stay PROJ-101 style: this repo is public.
+static Dictionary<string, string> HelpTopics() => new(StringComparer.OrdinalIgnoreCase)
+{
+    ["jira comment"] = """
+    atl-cli jira comment KEY <body>            Add a comment to an issue.
+
+      KEY "text"                Plain text, converted to ADF.
+      KEY --body-file FILE      Plain text from a file, converted to ADF.
+      KEY --md-file FILE        Markdown from a file, converted to ADF.
+                                Headings, lists, code blocks and inline `code` survive.
+      KEY --adf-file FILE       Raw ADF JSON document, posted as-is. Full control.
+
+    Comments are append-only; there is no delete verb. To edit an existing comment, use the web UI.
+    """,
+
+    ["jira describe"] = """
+    atl-cli jira describe KEY <body>           REPLACE an issue's description.
+
+      KEY "text"                Plain text, converted to ADF.
+      KEY --body-file FILE      Plain text from a file, converted to ADF.
+      KEY --md-file FILE        Markdown from a file, converted to ADF.
+      KEY --adf-file FILE       Raw ADF JSON document, sent as-is. Full control.
+
+    This REPLACES the whole description -- there is no append. To add to a rich description
+    without flattening its formatting, edit it in place:
+
+      1. atl-cli jira issue PROJ-101            -> read .fields.description (an ADF document)
+      2. splice your new nodes into its .content array
+      3. atl-cli jira describe PROJ-101 --adf-file edited.json
+
+    That preserves existing headings, code blocks, tables and inline marks exactly. Converting a
+    rich description to text and back does not.
+    """,
+
+    ["jira create"] = """
+    atl-cli jira create --project KEY --type Task --summary "..." [--assignee @me]
+
+    Prints the created issue as JSON, including its key.
+
+    There is NO --description flag; one is silently ignored. Set the description afterwards:
+      atl-cli jira describe PROJ-101 --md-file body.md
+    """,
+
+    ["jira search"] = """
+    atl-cli jira search "<jql>" [--limit N] [--fields a,b]
+
+    Returns a FLATTENED JSON array -- Key, Summary, Status, IssueType, Assignee (display name) --
+    not Jira's {issues:[...]} envelope, and no accountId. To get an accountId (for an ADF mention
+    node, say), run `atl-cli jira issue PROJ-101` on an issue that person is assigned to and read
+    .fields.assignee.accountId.
+    """,
+
+    ["wiki update"] = """
+    atl-cli wiki update <page-id> <title> <body.xhtml> [--draft]
+
+    The body is Confluence STORAGE XHTML and must start with an XHTML element; a body that does
+    not is rejected. Prefer a surgical edit -- `wiki page <id> --raw` to fetch, change only the
+    passage you mean, push it back -- so inline-comment anchors survive.
+
+    Note `--raw` PREPENDS a "# {title}" display line that is NOT part of the body. Strip
+    everything before the first '<' before sending it back.
+
+    On success the real stored version is echoed, and a version that did not advance is an error,
+    so an identical-content no-op cannot look like a successful write.
+    """,
+};
+
+// Resolves the most specific topic the caller asked for: "<service> <command>", then the full
+// usage. Always stdout, always 0.
+int PrintHelp(string[] rest)
+{
+    if (rest.Length >= 2 && HelpTopics().TryGetValue($"{rest[0]} {rest[1]}", out var topic))
+    {
+        Console.WriteLine(topic.TrimEnd());
+        return 0;
+    }
+
+    var usage = new StringWriter();
+    var previous = Console.Error;
+    Console.SetError(usage);
+    PrintUsage();
+    Console.SetError(previous);
+    Console.WriteLine(usage.ToString().TrimEnd());
+
+    if (rest.Length >= 2)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"(no detailed help for \"{rest[0]} {rest[1]}\"; its one-line form is listed above)");
+    }
+
+    return 0;
 }
