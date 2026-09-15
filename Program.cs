@@ -667,7 +667,18 @@ async Task<int> HandleBitbucket(string[] args)
 
             while (true)
             {
-                var snapshot = await client.GetPipelineStateAsync(watchBuild.Value);
+                PipelineWatchState? snapshot;
+                try
+                {
+                    snapshot = await client.GetPipelineStateAsync(watchBuild.Value);
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+                {
+                    // A dropped connection or the HttpClient's 100 s timeout throws rather than returning
+                    // an error response. Watches run for tens of minutes; one blip must not end them.
+                    snapshot = null;
+                }
+
                 if (snapshot is null)
                 {
                     // Network blip or a transient API error: keep watching.
