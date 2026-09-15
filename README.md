@@ -153,6 +153,11 @@ atl-cli bb pipeline-run PROJ-101
 atl-cli bb pipeline-run PROJ-101 --selector custom:deploy-to-production
 # Prints the new pipeline JSON (build_number, uuid, state). Requires pipeline:write on the token.
 
+# Bitbucket — read a deployment environment's variables (secured values are never returned)
+atl-cli bb env-vars                                        # list environment names
+atl-cli bb env-vars Production                             # Key / Value / Secured as JSON
+atl-cli bb env-vars Production --key DbDeployAction        # bare value, for scripts (exit 3 if secured)
+
 # Bitbucket — watch a pipeline until it ends or stops at a manual gate
 atl-cli bb pipeline-watch PROJ-101
 atl-cli bb pipeline-watch --build 11777 --interval 30

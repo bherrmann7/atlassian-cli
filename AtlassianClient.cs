@@ -1411,6 +1411,59 @@ public partial class AtlassianClient
         return steps;
     }
 
+    // Bitbucket pages both endpoints, so follow `next`. Elements are cloned so they outlive the JsonDocument.
+    private async Task<List<JsonElement>> GetAllBitbucketPagesAsync(string url)
+    {
+        var items = new List<JsonElement>();
+        string? next = url;
+        while (next is not null)
+        {
+            var resp = await _bbHttp.GetAsync(next);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var errBody = await resp.Content.ReadAsStringAsync();
+                throw new HttpRequestException($"GET {next} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+            }
+            using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+            var root = doc.RootElement;
+            foreach (var item in root.GetProperty("values").EnumerateArray())
+                items.Add(item.Clone());
+            next = root.TryGetProperty("next", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
+        }
+        return items;
+    }
+
+    public async Task<List<string>> GetDeploymentEnvironmentNamesAsync()
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        return (await GetAllBitbucketPagesAsync($"{repoPath}/environments/?pagelen=100"))
+            .Select(e => e.GetProperty("name").GetString() ?? "")
+            .ToList();
+    }
+
+    // A deployment environment's variables, looked up by the environment's display name
+    // (case-insensitive). Null when no environment has that name. Bitbucket never returns the
+    // value of a secured variable, so Value is null for those -- nothing secret can be printed.
+    public async Task<List<DeploymentVariable>?> GetDeploymentVariablesAsync(string environmentName)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var env = (await GetAllBitbucketPagesAsync($"{repoPath}/environments/?pagelen=100"))
+            .FirstOrDefault(e => string.Equals(e.GetProperty("name").GetString(), environmentName, StringComparison.OrdinalIgnoreCase));
+        if (env.ValueKind == JsonValueKind.Undefined)
+            return null;
+
+        var uuid = Uri.EscapeDataString(env.GetProperty("uuid").GetString()!);
+        return (await GetAllBitbucketPagesAsync($"{repoPath}/deployments_config/environments/{uuid}/variables?pagelen=100"))
+            .Select(v =>
+            {
+                var secured = v.TryGetProperty("secured", out var sec) && sec.ValueKind == JsonValueKind.True;
+                var value = !secured && v.TryGetProperty("value", out var val) && val.ValueKind == JsonValueKind.String ? val.GetString() : null;
+                return new DeploymentVariable(v.GetProperty("key").GetString() ?? "", value, secured);
+            })
+            .OrderBy(v => v.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     public async Task<PipelineFailure?> GetPipelineFailureAsync(string branch)
     {
         var data = await GetPipelinesAsync();
@@ -1515,6 +1568,7 @@ public record IssueStatusInfo(string Status, string? StatusDate);
 public record IssueSearchHit(string Key, string? Summary, string? Status, string? IssueType, string? Assignee);
 public record SprintInfo(int Id, string Name, string State, int BoardId, string BoardName);
 public record PipelineStatus(string Status, int BuildNumber);
+public record DeploymentVariable(string Key, string? Value, bool Secured);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
 public record PipelineWatchState(
     int BuildNumber, string State, string? Stage, string? Result, string? PausedStep,

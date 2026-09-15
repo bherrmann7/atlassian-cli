@@ -694,6 +694,53 @@ async Task<int> HandleBitbucket(string[] args)
             }
         }
 
+        // A deployment environment's variables. No name lists the environments. --key prints one
+        // variable's bare value for scripts. Exit: 0 ok, 1 usage/not found, 3 the variable is secured.
+        case "env-vars":
+        {
+            string? envName = null, onlyKey = null;
+            for (int i = 0; i < rest.Length; i++)
+            {
+                if (rest[i] == "--key" && i + 1 < rest.Length) onlyKey = rest[++i];
+                else if (rest[i].StartsWith("--key=")) onlyKey = rest[i]["--key=".Length..];
+                else if (!rest[i].StartsWith("--")) envName = rest[i];
+            }
+
+            if (envName is null)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(await client.GetDeploymentEnvironmentNamesAsync(), new JsonSerializerOptions { WriteIndented = true }));
+                return 0;
+            }
+
+            var variables = await client.GetDeploymentVariablesAsync(envName);
+            if (variables is null)
+            {
+                var names = await client.GetDeploymentEnvironmentNamesAsync();
+                Console.Error.WriteLine($"No deployment environment named '{envName}'. Environments: {string.Join(", ", names)}");
+                return 1;
+            }
+
+            if (onlyKey is null)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(variables, new JsonSerializerOptions { WriteIndented = true }));
+                return 0;
+            }
+
+            var match = variables.FirstOrDefault(v => v.Key == onlyKey);
+            if (match is null)
+            {
+                Console.Error.WriteLine($"'{envName}' has no variable '{onlyKey}'");
+                return 1;
+            }
+            if (match.Secured)
+            {
+                Console.Error.WriteLine($"'{onlyKey}' is a secured variable; Bitbucket does not return its value");
+                return 3;
+            }
+            Console.WriteLine(match.Value);
+            return 0;
+        }
+
         case "pipeline-run" when rest.Length >= 1:
         {
             var runBranch = rest[0];
@@ -893,6 +940,8 @@ int PrintUsage()
                                                      Exit 0 ok, 2 failed, 75 waiting on a gate.
       atl-cli bb pipeline-run BRANCH [--selector custom:PATTERN]
                                                      Trigger a pipeline (default branch pipeline, or a custom: one)
+      atl-cli bb env-vars [ENVIRONMENT] [--key KEY]  Deployment environment variables (JSON; secured values never shown).
+                                                     No ENVIRONMENT lists the environments; --key prints one bare value.
       atl-cli bb pr PROJ-101 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
       atl-cli bb pr-body PR_ID                        Print a PR's current description (for get-then-edit round-tripping)
       atl-cli bb upload FILE [FILE ...]               Upload to repo Downloads; prints the URL and markdown (for PR images)
@@ -974,6 +1023,21 @@ static Dictionary<string, string> HelpTopics() => new(StringComparer.OrdinalIgno
     not Jira's {issues:[...]} envelope, and no accountId. To get an accountId (for an ADF mention
     node, say), run `atl-cli jira issue PROJ-101` on an issue that person is assigned to and read
     .fields.assignee.accountId.
+    """,
+
+    ["bb env-vars"] = """
+    atl-cli bb env-vars [ENVIRONMENT] [--key KEY]
+
+      (no args)                 List the repository's deployment environment names (JSON).
+      ENVIRONMENT               That environment's variables as JSON: Key, Value, Secured.
+                                The name is matched case-insensitively ("Production", "production").
+      ENVIRONMENT --key KEY     Print just that variable's value, for scripts:
+                                  action=$(atl-cli bb env-vars Production --key DbDeployAction)
+
+    Secured variables are listed with Value null: Bitbucket never returns their values, so this
+    cannot leak a secret. With --key, a secured variable exits 3; an unknown environment or key exits 1.
+
+    Needs read access to pipelines/deployments on the Bitbucket token.
     """,
 
     ["wiki update"] = """
