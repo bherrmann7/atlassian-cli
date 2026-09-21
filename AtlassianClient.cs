@@ -157,6 +157,54 @@ public partial class AtlassianClient
         return doc.RootElement;
     }
 
+    // Comments on an issue, newest last, as Jira returns them. Exists so comment-delete has a way to
+    // find an id: the ids are in the full issue payload too, but that buries them under every other
+    // field. Mirrors "bb pr-comments", which the resolve verb leans on the same way.
+    public async Task<JsonElement> GetIssueCommentsAsync(string key)
+    {
+        var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}/comment");
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"List comments failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement.Clone();
+    }
+
+    // Delete one comment. Jira answers 204 with no body.
+    //
+    // This is irreversible and there is no trash to recover from, so the caller is expected to have
+    // confirmed -- see the --yes gate in Program.cs. A 404 means the comment is already gone (or the
+    // id belongs to another issue); that is reported as such rather than thrown, because the caller
+    // asked for an end state. A 403 is its own message: Jira distinguishes deleting your own comment
+    // from deleting anyone's, and the token usually only has the former.
+    public async Task<string> DeleteIssueCommentAsync(string key, string commentId)
+    {
+        var url = $"/rest/api/3/issue/{Uri.EscapeDataString(key)}/comment/{Uri.EscapeDataString(commentId)}";
+        var resp = await _jiraHttp.DeleteAsync(url);
+
+        if (resp.IsSuccessStatusCode)
+        {
+            return $"Deleted comment {commentId} on {key}";
+        }
+
+        if (resp.StatusCode == HttpStatusCode.NotFound)
+        {
+            return $"No comment {commentId} on {key} -- already deleted, or the id belongs to another issue";
+        }
+
+        var errBody = await resp.Content.ReadAsStringAsync();
+        if (resp.StatusCode == HttpStatusCode.Forbidden)
+        {
+            throw new HttpRequestException(
+                $"Not allowed to delete comment {commentId} on {key}. Jira permissions separate deleting your own "
+                + $"comments from deleting anyone's, and this token may only hold the former: {errBody}");
+        }
+
+        throw new HttpRequestException($"Delete comment {commentId} on {key} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+    }
+
     public async Task<JsonElement> AttachToIssueAsync(string key, string filePath)
     {
         // Jira's attachment endpoint is the one Jira API that is not JSON in: it takes a multipart

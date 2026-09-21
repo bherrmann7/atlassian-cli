@@ -121,6 +121,17 @@ atl-cli jira comment PROJ-101 --md-file note.md
 # The conversion round-trips: --text of a doc written with --md-file returns the same markdown.
 # Mentions render as @Name when reading; writing one still needs --adf-file with an accountId.
 
+# Jira — list and delete comments
+atl-cli jira comments PROJ-101                   # every comment, with its id
+atl-cli jira comment-delete PROJ-101 85942       # dry run: who wrote it, when, how it opens
+atl-cli jira comment-delete PROJ-101 85942 --yes # actually delete it
+# There is no edit verb and no trash: a deleted comment is gone for everyone. The bare form
+# changes nothing and exits non-zero, so it is safe to run just to check an id. Jira treats
+# "delete my own comment" and "delete anyone's" as separate permissions — a 403 on someone
+# else's comment usually means the token only holds the first.
+# Keeping a ticket readable is often better served by rewriting the description than by
+# appending another comment: jira issue --text, edit, jira describe --md-file.
+
 # Jira — attach files (screenshots, logs, exports)
 atl-cli jira attach PROJ-101 screenshot.png
 atl-cli jira attach PROJ-101 before.png after.png run.log

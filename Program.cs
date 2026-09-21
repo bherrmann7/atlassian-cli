@@ -204,6 +204,60 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "comments" when rest.Length >= 1:
+        {
+            var comments = await client.GetIssueCommentsAsync(rest[0]);
+            Console.WriteLine(JsonSerializer.Serialize(comments, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        case "comment-delete" when rest.Length >= 2:
+        {
+            var key = rest[0];
+            var commentId = rest[1];
+            var confirmed = rest.Skip(2).Any(a => a == "--yes");
+
+            // Deleting a comment cannot be undone and Jira keeps no trash, so a bare invocation
+            // reports what would go and changes nothing. Printing the author, the date and the
+            // opening line is what makes the id checkable -- an id alone is impossible to verify.
+            if (!confirmed)
+            {
+                var listed = await client.GetIssueCommentsAsync(key);
+                JsonElement? match = null;
+                if (listed.TryGetProperty("comments", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var c in arr.EnumerateArray())
+                    {
+                        if (c.TryGetProperty("id", out var idEl) && idEl.GetString() == commentId) { match = c; break; }
+                    }
+                }
+
+                if (match is null)
+                {
+                    Console.Error.WriteLine($"No comment {commentId} on {key}. Run: atl-cli jira comments {key}");
+                    return 1;
+                }
+
+                var author = match.Value.TryGetProperty("author", out var a) && a.TryGetProperty("displayName", out var dn)
+                    ? dn.GetString() : "unknown";
+                var created = match.Value.TryGetProperty("created", out var cr) ? cr.GetString() : "unknown";
+                var preview = match.Value.TryGetProperty("body", out var b) ? Adf.ToMarkdown(b) : string.Empty;
+                preview = preview.Replace("\r", " ").Replace("\n", " ").Trim();
+                if (preview.Length > 120) { preview = preview[..120] + "..."; }
+
+                Console.WriteLine($"Would delete comment {commentId} on {key}");
+                Console.WriteLine($"  author:  {author}");
+                Console.WriteLine($"  created: {created}");
+                Console.WriteLine($"  starts:  {preview}");
+                Console.WriteLine();
+                Console.WriteLine("This cannot be undone. Re-run with --yes to delete it.");
+                return 1;
+            }
+
+            Console.WriteLine(await client.DeleteIssueCommentAsync(key, commentId));
+            return 0;
+        }
+
         case "comment" when rest.Length >= 2:
         {
             var key = rest[0];
@@ -931,6 +985,10 @@ int PrintUsage()
       atl-cli jira comment PROJ-101 --body-file FILE Add a comment from a plain-text file
       atl-cli jira comment PROJ-101 --adf-file FILE  Add a comment from a raw ADF JSON doc (rich formatting)
       atl-cli jira comment PROJ-101 --md-file FILE   Add a comment from markdown (converted to ADF)
+      atl-cli jira comments PROJ-101                 List an issue's comments (JSON, incl. ids)
+      atl-cli jira comment-delete PROJ-101 ID [--yes]
+                                                     Delete one comment. Without --yes, prints what
+                                                     would go and changes nothing. Irreversible.
       atl-cli jira attach PROJ-101 shot.png [more...] Attach one or more files (images render inline)
       atl-cli jira describe PROJ-101 "text"          Set the description (plain text -> ADF; replaces existing)
       atl-cli jira describe PROJ-101 --body-file FILE Set the description from a plain-text file
@@ -996,7 +1054,21 @@ static Dictionary<string, string> HelpTopics() => new(StringComparer.OrdinalIgno
                                 Headings, lists, code blocks and inline `code` survive.
       KEY --adf-file FILE       Raw ADF JSON document, posted as-is. Full control.
 
-    Comments are append-only; there is no delete verb. To edit an existing comment, use the web UI.
+    There is no edit: to change a comment, delete it and post a new one, or use the web UI.
+    """,
+
+    ["jira comment-delete"] = """
+    atl-cli jira comment-delete KEY ID [--yes]  Delete one comment. (ID comes from jira comments.)
+
+      KEY ID                    Dry run. Prints the comment's author, date and opening line,
+                                exits non-zero, deletes nothing.
+      KEY ID --yes              Actually delete it.
+
+    Irreversible -- Jira keeps no trash for comments, so a deleted comment is gone for everyone.
+    Save the body first if it is worth keeping: atl-cli jira comments KEY.
+
+    Jira permissions separate deleting your OWN comments from deleting anyone's. A 403 usually
+    means the token holds only the former and the comment belongs to someone else.
     """,
 
     ["jira describe"] = """
