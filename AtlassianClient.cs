@@ -115,6 +115,44 @@ public partial class AtlassianClient
         // 201 Created with an empty body — nothing to parse.
     }
 
+    // An issue's links, each with the link id unlink needs, its type, which side this issue is on,
+    // and the other issue. The same pair can be linked twice (once from each side); this shows both.
+    public async Task<List<IssueLinkInfo>> GetIssueLinksAsync(string key)
+    {
+        var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}?fields=issuelinks");
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Get links for {key} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        var links = new List<IssueLinkInfo>();
+        if (!doc.RootElement.TryGetProperty("fields", out var f) || !f.TryGetProperty("issuelinks", out var arr))
+            return links;
+        foreach (var l in arr.EnumerateArray())
+        {
+            var type = l.GetProperty("type");
+            bool outward = l.TryGetProperty("outwardIssue", out var other);
+            if (!outward && !l.TryGetProperty("inwardIssue", out other)) continue;
+            links.Add(new IssueLinkInfo(
+                l.GetProperty("id").GetString() ?? "",
+                type.GetProperty("name").GetString() ?? "",
+                outward ? type.GetProperty("outward").GetString() ?? "" : type.GetProperty("inward").GetString() ?? "",
+                other.GetProperty("key").GetString() ?? ""));
+        }
+        return links;
+    }
+
+    public async Task DeleteIssueLinkAsync(string linkId)
+    {
+        var resp = await _jiraHttp.DeleteAsync($"/rest/api/3/issueLink/{Uri.EscapeDataString(linkId)}");
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Delete link {linkId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+    }
+
     public async Task<JsonElement> CreateCommentAsync(string key, string text)
     {
         // Wrap plain text in a minimal ADF document: one paragraph per line so newlines
@@ -1814,6 +1852,7 @@ public record IssueStatusInfo(string Status, string? StatusDate);
 public record IssueSearchHit(string Key, string? Summary, string? Status, string? IssueType, string? Assignee);
 public record SprintInfo(int Id, string Name, string State, int BoardId, string BoardName);
 public record PipelineStatus(string Status, int BuildNumber);
+public record IssueLinkInfo(string Id, string Type, string Relation, string OtherKey);
 public record DeploymentVariable(string Key, string? Value, bool Secured);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
 public record PipelineStepInfo(string Name, string State, string? Result, DateTimeOffset? StartedOn, int? DurationSeconds);

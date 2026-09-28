@@ -445,6 +445,21 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "links" when rest.Length == 1:
+        {
+            var links = await client.GetIssueLinksAsync(rest[0]);
+            Console.WriteLine(JsonSerializer.Serialize(links, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        // Removes one link by its id (from `jira links`). Deleting a link removes it from both issues.
+        case "unlink" when rest.Length == 1:
+        {
+            await client.DeleteIssueLinkAsync(rest[0]);
+            Console.WriteLine($"link {rest[0]} removed");
+            return 0;
+        }
+
         case "points" when rest.Length == 2:
         {
             var key = rest[0];
@@ -1115,6 +1130,8 @@ int PrintUsage()
       atl-cli jira describe PROJ-101 --md-file FILE  Set the description from markdown (converted to ADF)
       atl-cli jira summary PROJ-101 "new title"      Set the summary/title (replaces existing)
       atl-cli jira summary PROJ-101 --body-file FILE Set the summary from a file (first line wins; trimmed)
+      atl-cli jira links PROJ-101                  An issue's links with their ids (JSON)
+      atl-cli jira unlink LINK_ID                  Remove one link, by id from `jira links`
       atl-cli jira link PROJ-101 PROJ-102 [--type Relates]
       atl-cli jira points PROJ-101 5                 Set Story Points (field auto-detected)
                                                      Link two issues ("relates to" by default)
