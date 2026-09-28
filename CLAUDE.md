@@ -36,5 +36,6 @@ Single-project CLI (`net10.0`), three files:
 - A pipeline parked on a manual gate reports pipeline-level `state.stage.name == "PAUSED"`. That is what `pipeline-watch` keys on. A step's `trigger.type == "manual"` plus `state.name == "PENDING"` is NOT a gate: every later manual step looks like that from the moment the pipeline starts.
 - The steps endpoint pages (default 10, max 100). Deploy pipelines run to 45+ steps, so step scans must follow `next` — see `GetPipelineStepsAsync`.
 - The step-log endpoint serves plain text and answers `Accept: application/json` with 406, then 307s to a storage host. It needs its own `Accept: */*` rather than the Bitbucket client's JSON default.
+- `pipeline-steps` estimates the ETA from recent successful runs of the *same selector* (`pull-requests`, `branches`, `custom:<pattern>`); a PR build and a custom deploy differ by an order of magnitude, so mixing them makes the estimate useless. A PR build names its branch in `target.source`, a branch or custom build in `target.ref_name`.
 - The `pipeline-log` command parses raw build logs for `error CS` / `error TS` patterns to extract compiler errors.
 - Confluence `wiki page` converts storage-format HTML to markdown-like text by default; `--raw` returns the original HTML.

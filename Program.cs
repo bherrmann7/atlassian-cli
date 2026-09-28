@@ -715,6 +715,45 @@ async Task<int> HandleBitbucket(string[] args)
             Console.WriteLine(JsonSerializer.Serialize(failure, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
 
+        // One pipeline's steps with state, result and duration, plus an ETA from the median of
+        // recent successful runs of the same kind. Defaults to the branch's latest build.
+        case "pipeline-steps" when rest.Length >= 1:
+        {
+            int? stepsBuild = null;
+            string? stepsBranch = null;
+            for (int i = 0; i < rest.Length; i++)
+            {
+                if (rest[i] == "--build" && i + 1 < rest.Length) { if (int.TryParse(rest[++i], out var b)) stepsBuild = b; else { Console.Error.WriteLine("--build expects a build number"); return 1; } }
+                else if (rest[i].StartsWith("--build=")) { if (int.TryParse(rest[i]["--build=".Length..], out var b)) stepsBuild = b; else { Console.Error.WriteLine("--build expects a build number"); return 1; } }
+                else if (!rest[i].StartsWith("--")) stepsBranch = rest[i];
+            }
+
+            if (stepsBuild is null)
+            {
+                if (stepsBranch is null)
+                {
+                    Console.Error.WriteLine("pipeline-steps needs a branch or --build N");
+                    return 1;
+                }
+                var latest = await client.GetPipelineStatusesAsync([stepsBranch]);
+                if (!latest.TryGetValue(stepsBranch, out var ls))
+                {
+                    Console.Error.WriteLine($"No pipeline found for {stepsBranch}");
+                    return 1;
+                }
+                stepsBuild = ls.BuildNumber;
+            }
+
+            var report = await client.GetPipelineStepsReportAsync(stepsBuild.Value);
+            if (report is null)
+            {
+                Console.Error.WriteLine($"Pipeline {stepsBuild} not found");
+                return 1;
+            }
+            Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
         // Poll one pipeline until it finishes or parks on a manual gate.
         // Emits one JSON line per state change (NDJSON) so callers can react as
         // it runs. Exit: 0 finished successfully, 2 finished otherwise,
@@ -725,6 +764,7 @@ async Task<int> HandleBitbucket(string[] args)
             string? watchBranch = null;
             var intervalSec = 15;
             var throughGates = false;
+            var watchSteps = false;
 
             for (int i = 0; i < rest.Length; i++)
             {
@@ -752,6 +792,7 @@ async Task<int> HandleBitbucket(string[] args)
                     intervalSec = parsed;
                 }
                 else if (rest[i] == "--wait-through-gates") throughGates = true;
+                else if (rest[i] == "--steps") watchSteps = true;
                 else if (!rest[i].StartsWith("--")) watchBranch = rest[i];
             }
 
@@ -773,6 +814,7 @@ async Task<int> HandleBitbucket(string[] args)
 
             var jsonOpts = new JsonSerializerOptions();
             string? lastLine = null;
+            var lastStepStates = new Dictionary<string, string>();
 
             while (true)
             {
@@ -802,6 +844,27 @@ async Task<int> HandleBitbucket(string[] args)
                     Console.WriteLine(line);
                     Console.Out.Flush();
                     lastLine = line;
+                }
+
+                // --steps: also one line per step whose state or result changed since the last poll.
+                if (watchSteps)
+                {
+                    try
+                    {
+                        foreach (var step in await client.GetPipelineStepInfosAsync(watchBuild.Value))
+                        {
+                            var key = $"{step.State}/{step.Result}";
+                            if (lastStepStates.TryGetValue(step.Name, out var prev) && prev == key) continue;
+                            lastStepStates[step.Name] = key;
+                            Console.WriteLine(JsonSerializer.Serialize(
+                                new { Step = step.Name, step.State, step.Result, step.DurationSeconds }, jsonOpts));
+                        }
+                        Console.Out.Flush();
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+                    {
+                        // Same as the pipeline poll: a blip skips this round rather than ending the watch.
+                    }
                 }
 
                 if (snapshot.Finished)
@@ -1058,7 +1121,8 @@ int PrintUsage()
     Bitbucket:
       atl-cli bb pipeline PROJ-101 [PROJ-102 ...]    Pipeline status per branch (JSON)
       atl-cli bb pipeline-log PROJ-101                Failed step + error details
-      atl-cli bb pipeline-watch BRANCH [--build N] [--interval S] [--wait-through-gates]
+      atl-cli bb pipeline-watch BRANCH [--build N] [--interval S] [--wait-through-gates] [--steps]
+      atl-cli bb pipeline-steps BRANCH [--build N]  Steps with state/result/duration + ETA (JSON)
                                                      Poll until the pipeline ends or parks on a manual gate.
                                                      Streams one JSON line per state change.
                                                      Exit 0 ok, 2 failed, 75 waiting on a gate.

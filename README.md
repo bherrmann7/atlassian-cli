@@ -174,12 +174,21 @@ atl-cli bb pipeline-watch PROJ-101
 atl-cli bb pipeline-watch --build 11777 --interval 30
 # Streams one JSON line per state change; exits 0 successful, 2 failed, 75 waiting on a gate.
 # --wait-through-gates keeps polling past a gate instead of exiting.
+# --steps also prints one line per step whose state or result changes.
 # Nag out loud on a Mac until someone clicks Deploy:
 #   while true; do
 #     atl-cli bb pipeline-watch PROJ-101; status=$?
 #     [ $status -eq 75 ] || break
 #     say "Need to deploy"; sleep 10
 #   done
+
+# Bitbucket — a pipeline's steps, with an ETA
+atl-cli bb pipeline-steps PROJ-101              # latest build for the branch
+atl-cli bb pipeline-steps --build 11777
+# JSON: each step's State, Result, StartedOn, DurationSeconds (running steps timed against now),
+# plus ElapsedSeconds, TypicalSeconds (median of up to 10 recent SUCCESSFUL runs of the same
+# selector -- PR builds against PR builds, a custom pipeline against its own earlier runs) and
+# EtaSeconds while it is still running.
 
 # Jira — transition a ticket
 atl-cli jira transition PROJ-101 "In Progress"

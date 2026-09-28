@@ -1541,6 +1541,98 @@ public partial class AtlassianClient
         return null;
     }
 
+    // Each step's state, result, start and duration; a running step is timed against now.
+    public async Task<List<PipelineStepInfo>> GetPipelineStepInfosAsync(int buildNumber)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var steps = new List<PipelineStepInfo>();
+        foreach (var step in await GetPipelineStepsAsync(buildNumber.ToString()))
+        {
+            var st = step.TryGetProperty("state", out var sv) ? sv : default;
+            var state = st.ValueKind == JsonValueKind.Object && st.TryGetProperty("name", out var nm) ? nm.GetString() ?? "UNKNOWN" : "UNKNOWN";
+            var result = st.ValueKind == JsonValueKind.Object && st.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.Object
+                         && r.TryGetProperty("name", out var rn) ? rn.GetString() : null;
+            DateTimeOffset? started = step.TryGetProperty("started_on", out var so) && so.ValueKind == JsonValueKind.String
+                                      && DateTimeOffset.TryParse(so.GetString(), out var ts) ? ts : null;
+            int? duration = state == "COMPLETED" && step.TryGetProperty("duration_in_seconds", out var sd) && sd.ValueKind == JsonValueKind.Number
+                ? sd.GetInt32()
+                : state == "IN_PROGRESS" && started is { } s0 ? (int)(now - s0).TotalSeconds : null;
+            steps.Add(new PipelineStepInfo(
+                step.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                state, result, started, duration));
+        }
+        return steps;
+    }
+
+    // One pipeline and its steps, for pipeline-steps. Each step carries its state, result, start
+    // and duration (running steps are timed against now). The ETA compares this build's elapsed
+    // time with the median duration of recent SUCCESSFUL builds started by the same selector --
+    // a branch/PR build is compared with other branch/PR builds, a custom pipeline with earlier
+    // runs of that same custom pipeline -- because the two differ by an order of magnitude.
+    public async Task<PipelineStepsReport?> GetPipelineStepsReportAsync(int buildNumber)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var resp = await _bbHttp.GetAsync($"{repoPath}/pipelines/{buildNumber}");
+        if (!resp.IsSuccessStatusCode) return null;
+
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        var p = doc.RootElement;
+        var now = DateTimeOffset.UtcNow;
+
+        var (state, result) = StateAndResult(p);
+        var created = Timestamp(p, "created_on");
+        var elapsed = p.TryGetProperty("duration_in_seconds", out var d) && d.ValueKind == JsonValueKind.Number && state == "COMPLETED"
+            ? d.GetInt32()
+            : created is { } c ? (int)(now - c).TotalSeconds : (int?)null;
+        var selector = SelectorKey(p);
+        // A pull-request build names its branch in target.source; a branch or custom build in ref_name.
+        var refName = !p.TryGetProperty("target", out var t) ? null
+                    : t.TryGetProperty("source", out var src) ? src.GetString()
+                    : t.TryGetProperty("ref_name", out var rn) ? rn.GetString()
+                    : null;
+
+        var steps = await GetPipelineStepInfosAsync(buildNumber);
+
+        // Typical duration from recent successful runs of the same kind, this build excluded.
+        var history = await GetPipelinesAsync(100);
+        var durations = history.GetProperty("values").EnumerateArray()
+            .Where(x => x.GetProperty("build_number").GetInt32() != buildNumber
+                        && SelectorKey(x) == selector
+                        && StateAndResult(x) is ("COMPLETED", "SUCCESSFUL")
+                        && x.TryGetProperty("duration_in_seconds", out var xd) && xd.ValueKind == JsonValueKind.Number)
+            .Select(x => x.GetProperty("duration_in_seconds").GetInt32())
+            .Take(10)
+            .OrderBy(x => x)
+            .ToList();
+        int? typical = durations.Count > 0 ? durations[durations.Count / 2] : null;
+        int? eta = state != "COMPLETED" && typical is { } ty && elapsed is { } el ? Math.Max(0, ty - el) : null;
+
+        return new PipelineStepsReport(
+            buildNumber, refName, selector, state, result, created, elapsed,
+            typical, durations.Count, eta, steps);
+
+        static (string State, string? Result) StateAndResult(JsonElement e)
+        {
+            if (!e.TryGetProperty("state", out var st)) return ("UNKNOWN", null);
+            var name = st.TryGetProperty("name", out var nm) ? nm.GetString() ?? "UNKNOWN" : "UNKNOWN";
+            var res = st.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.Object
+                      && r.TryGetProperty("name", out var rnm) ? rnm.GetString() : null;
+            return (name, res);
+        }
+
+        static DateTimeOffset? Timestamp(JsonElement e, string prop) =>
+            e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String
+            && DateTimeOffset.TryParse(v.GetString(), out var ts) ? ts : null;
+
+        static string SelectorKey(JsonElement e)
+        {
+            if (!e.TryGetProperty("target", out var tg) || !tg.TryGetProperty("selector", out var sel)) return "default";
+            var type = sel.TryGetProperty("type", out var ty) ? ty.GetString() : null;
+            var pattern = sel.TryGetProperty("pattern", out var pt) ? pt.GetString() : null;
+            return type == "custom" ? $"custom:{pattern}" : type ?? "default";
+        }
+    }
+
     // Bitbucket pages the steps endpoint (default 10, max 100) and a full deploy
     // pipeline can run to 45+ steps, so follow `next` -- a single page silently
     // hides every later step. Elements are cloned so they outlive the JsonDocument.
@@ -1721,6 +1813,12 @@ public record SprintInfo(int Id, string Name, string State, int BoardId, string 
 public record PipelineStatus(string Status, int BuildNumber);
 public record DeploymentVariable(string Key, string? Value, bool Secured);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
+public record PipelineStepInfo(string Name, string State, string? Result, DateTimeOffset? StartedOn, int? DurationSeconds);
+public record PipelineStepsReport(
+    int BuildNumber, string? Branch, string Selector, string State, string? Result,
+    DateTimeOffset? CreatedOn, int? ElapsedSeconds,
+    int? TypicalSeconds, int TypicalSampleSize, int? EtaSeconds,
+    List<PipelineStepInfo> Steps);
 public record PipelineWatchState(
     int BuildNumber, string State, string? Stage, string? Result, string? PausedStep,
     bool Paused, bool Finished);
