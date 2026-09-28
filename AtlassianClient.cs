@@ -1210,6 +1210,23 @@ public partial class AtlassianClient
         return doc.RootElement.Clone();
     }
 
+    // Replace an existing PR comment's body (markdown in content.raw). Only the comment's author can
+    // edit it; anyone else gets a 403. The comment keeps its id, thread, and inline anchor.
+    public async Task<JsonElement> UpdatePullRequestCommentAsync(int prId, int commentId, string text)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var json = JsonSerializer.Serialize(new { content = new { raw = text } });
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _bbHttp.PutAsync($"{repoPath}/pullrequests/{prId}/comments/{commentId}", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Edit comment {commentId} on pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement.Clone();
+    }
+
     // Mark a comment thread resolved (or reopen it with resolved: false).
     //
     // Send NO request body. The endpoint takes none, and posting an empty body with

@@ -638,6 +638,38 @@ async Task<int> HandleBitbucket(string[] args)
             return 0;
         }
 
+        case "pr-comment-edit" when rest.Length >= 2:
+        {
+            const string editUsage = "Usage: atl-cli bb pr-comment-edit PR_ID COMMENT_ID \"text\" | --body-file FILE   (replaces the body; COMMENT_ID comes from pr-comments)";
+            if (!int.TryParse(rest[0], out int editPrId) || !int.TryParse(rest[1], out int editCommentId))
+            {
+                Console.Error.WriteLine(editUsage);
+                return 1;
+            }
+            string? editText = null;
+            for (int i = 2; i < rest.Length; i++)
+            {
+                if (rest[i] == "--body-file" && i + 1 < rest.Length)
+                {
+                    var file = rest[++i];
+                    if (!File.Exists(file)) { Console.Error.WriteLine($"Body file not found: {file}"); return 1; }
+                    editText = await File.ReadAllTextAsync(file);
+                }
+                else if (!rest[i].StartsWith("--"))
+                {
+                    editText = rest[i];
+                }
+            }
+            if (string.IsNullOrWhiteSpace(editText))
+            {
+                Console.Error.WriteLine(editUsage);
+                return 1;
+            }
+            var edited = await client.UpdatePullRequestCommentAsync(editPrId, editCommentId, editText);
+            Console.WriteLine(JsonSerializer.Serialize(edited, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
         case "pr-resolve" when rest.Length >= 2:
         {
             if (!int.TryParse(rest[0], out int resolvePrId) || !int.TryParse(rest[1], out int resolveCommentId))
@@ -1022,6 +1054,8 @@ int PrintUsage()
       atl-cli bb pr-comment PR_ID "text"             Add a PR comment (markdown)
       atl-cli bb pr-comment PR_ID --body-file FILE   Add a PR comment from a file
                                                      Add [--parent COMMENT_ID] to reply in an existing thread
+      atl-cli bb pr-comment-edit PR_ID COMMENT_ID "text" | --body-file FILE
+                                                 Replace a PR comment's body (author only)
       atl-cli bb pr-resolve PR_ID COMMENT_ID        Mark a comment thread resolved ([--undo] reopens it)
 
     Confluence:
