@@ -576,10 +576,10 @@ async Task<int> HandleBitbucket(string[] args)
         {
             if (!int.TryParse(rest[0], out int prId))
             {
-                Console.Error.WriteLine("Usage: atl-cli bb pr-edit PR_ID [--title \"...\"] [--description \"...\" | --description-file FILE] [--draft true|false]");
+                Console.Error.WriteLine("Usage: atl-cli bb pr-edit PR_ID [--title \"...\"] [--description \"...\" | --description-file FILE] [--draft true|false] [--dest BRANCH]");
                 return 1;
             }
-            string? editTitle = null, editDescription = null;
+            string? editTitle = null, editDescription = null, editDest = null;
             bool? editDraft = null;
             for (int i = 1; i < rest.Length; i++)
             {
@@ -595,9 +595,10 @@ async Task<int> HandleBitbucket(string[] args)
                         break;
                     }
                     case "--draft" when i + 1 < rest.Length && bool.TryParse(rest[i + 1], out var dv): editDraft = dv; i++; break;
+                    case "--dest" when i + 1 < rest.Length: editDest = rest[++i]; break;
                 }
             }
-            var updated = await client.UpdatePullRequestAsync(prId, editTitle, editDescription, editDraft);
+            var updated = await client.UpdatePullRequestAsync(prId, editTitle, editDescription, editDraft, editDest);
             Console.WriteLine(JsonSerializer.Serialize(updated, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
         }
@@ -1137,7 +1138,7 @@ int PrintUsage()
       atl-cli bb upload FILE [FILE ...]               Upload to repo Downloads; prints the URL and markdown (for PR images)
       atl-cli bb pr-create --source BRANCH --title "..." [--dest develop] [--description... | --description-file FILE] [--draft]
                                                      Create a pull request (prints JSON incl. id)
-      atl-cli bb pr-edit PR_ID [--title "..."] [--description... | --description-file FILE] [--draft true|false]
+      atl-cli bb pr-edit PR_ID [--title "..."] [--description... | --description-file FILE] [--draft true|false] [--dest BRANCH]
                                                      Update a PR's title/description/draft state
       atl-cli bb pr-comments PR_ID                    List a PR's comments (general + inline) as JSON
       atl-cli bb pr-comment PR_ID "text"             Add a PR comment (markdown)

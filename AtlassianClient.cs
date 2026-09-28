@@ -1443,7 +1443,7 @@ public partial class AtlassianClient
         return doc.RootElement;
     }
 
-    public async Task<JsonElement> UpdatePullRequestAsync(int id, string? title, string? description, bool? draft)
+    public async Task<JsonElement> UpdatePullRequestAsync(int id, string? title, string? description, bool? draft, string? destinationBranch = null)
     {
         var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
 
@@ -1464,6 +1464,9 @@ public partial class AtlassianClient
             ["description"] = description ?? (root.TryGetProperty("description", out var d) ? d.GetString() ?? "" : ""),
             ["draft"] = draft ?? (root.TryGetProperty("draft", out var dr) && dr.GetBoolean()),
         };
+        // Retarget, e.g. once the branch a stacked PR was aimed at has itself merged.
+        if (destinationBranch is not null)
+            fields["destination"] = new { branch = new { name = destinationBranch } };
 
         var json = JsonSerializer.Serialize(fields);
         var content = new StringContent(json, Encoding.UTF8, "application/json");
