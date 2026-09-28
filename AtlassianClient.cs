@@ -1144,6 +1144,82 @@ public partial class AtlassianClient
             : "";
     }
 
+    // One PR by id: who wrote it, where it points, who has approved, and the build statuses reported
+    // against its head commit. The head-commit statuses are what matter for "is this PR green" — a
+    // branch-level pipeline lookup can return an older build that passed while a newer push is running.
+    public async Task<PullRequestDetail> GetPullRequestAsync(int prId)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var resp = await _bbHttp.GetAsync($"{repoPath}/pullrequests/{prId}");
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Fetch pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        var pr = doc.RootElement;
+
+        static string? Str(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+        var author = pr.GetProperty("author");
+        var source = pr.GetProperty("source");
+        var dest = pr.GetProperty("destination");
+        // The PR payload carries a 12-char abbreviated hash; the commit endpoint resolves it to the full one.
+        var headShort = source.GetProperty("commit").GetProperty("hash").GetString()!;
+
+        var approvals = new List<string>();
+        if (pr.TryGetProperty("participants", out var parts))
+        {
+            foreach (var p in parts.EnumerateArray())
+            {
+                if (p.TryGetProperty("approved", out var a) && a.ValueKind == JsonValueKind.True)
+                    approvals.Add(Str(p.GetProperty("user"), "display_name") ?? "");
+            }
+        }
+
+        var commitResp = await _bbHttp.GetAsync($"{repoPath}/commit/{headShort}");
+        commitResp.EnsureSuccessStatusCode();
+        using var commitDoc = await JsonDocument.ParseAsync(await commitResp.Content.ReadAsStreamAsync());
+        var headSha = commitDoc.RootElement.GetProperty("hash").GetString()!;
+
+        var statusResp = await _bbHttp.GetAsync($"{repoPath}/commit/{headSha}/statuses?pagelen=100");
+        statusResp.EnsureSuccessStatusCode();
+        using var statusDoc = await JsonDocument.ParseAsync(await statusResp.Content.ReadAsStreamAsync());
+        var builds = new List<CommitBuildStatus>();
+        foreach (var s in statusDoc.RootElement.GetProperty("values").EnumerateArray())
+        {
+            builds.Add(new CommitBuildStatus(
+                Str(s, "key") ?? "", Str(s, "name"), Str(s, "state") ?? "", Str(s, "url"), Str(s, "updated_on")));
+        }
+
+        // One word for scripts: no Pipelines status yet counts as PENDING (third-party checks such as
+        // security scanners report within seconds of a push, long before the pipeline posts); any
+        // failure or stop wins over a success from another status key; all-successful is SUCCESSFUL.
+        var pipelineReported = builds.Any(b => b.Url?.Contains("/pipelines/results/") == true);
+        var build = !pipelineReported ? "PENDING"
+                  : builds.Any(b => b.State is "FAILED" or "STOPPED") ? "FAILED"
+                  : builds.All(b => b.State == "SUCCESSFUL") ? "SUCCESSFUL"
+                  : "INPROGRESS";
+
+        return new PullRequestDetail(
+            prId,
+            Str(pr, "state") ?? "",
+            pr.TryGetProperty("draft", out var d) && d.ValueKind == JsonValueKind.True,
+            Str(pr, "title") ?? "",
+            pr.GetProperty("links").GetProperty("html").GetProperty("href").GetString() ?? "",
+            Str(author, "display_name") ?? "",
+            Str(author, "nickname"),
+            Str(author, "account_id"),
+            source.GetProperty("branch").GetProperty("name").GetString() ?? "",
+            dest.GetProperty("branch").GetProperty("name").GetString() ?? "",
+            headSha,
+            Str(pr, "updated_on"),
+            approvals,
+            build,
+            builds);
+    }
+
     // A PR's comments — general and inline arrive in one feed. An inline comment carries an `inline`
     // object naming the file and line; a reply carries `parent.id`. Deleted comments come back as
     // tombstones with no content, so they're skipped. pagelen=100 covers any realistic review thread
@@ -1192,11 +1268,21 @@ public partial class AtlassianClient
 
     // Add a general (non-inline) PR comment. Bitbucket takes the body as markdown in content.raw.
     // Pass parentId to reply to an existing comment instead of starting a new thread.
-    public async Task<JsonElement> PostPullRequestCommentAsync(int prId, string text, int? parentId = null)
+    // Inline comments anchor to a file and a line: `to` is a line number in the PR's new version
+    // (added or context lines), `from` a line in the old version (only for removed lines). Bitbucket
+    // anchors against the PR's current diff, so a line outside it shows up as a file-level comment.
+    public async Task<JsonElement> PostPullRequestCommentAsync(int prId, string text, int? parentId = null,
+        string? inlinePath = null, int? inlineLine = null, bool oldSide = false)
     {
         var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
         var fields = new Dictionary<string, object?> { ["content"] = new { raw = text } };
         if (parentId is not null) fields["parent"] = new { id = parentId.Value };
+        if (inlinePath is not null)
+        {
+            var inline = new Dictionary<string, object> { ["path"] = inlinePath };
+            if (inlineLine is not null) inline[oldSide ? "from" : "to"] = inlineLine.Value;
+            fields["inline"] = inline;
+        }
 
         var json = JsonSerializer.Serialize(fields);
         var content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -1639,6 +1725,12 @@ public record PipelineWatchState(
     int BuildNumber, string State, string? Stage, string? Result, string? PausedStep,
     bool Paused, bool Finished);
 public record PullRequestInfo(int Id, string State, string Title, string Url, string SourceBranch, string? ClosedOn);
+public record CommitBuildStatus(string Key, string? Name, string State, string? Url, string? UpdatedOn);
+public record PullRequestDetail(
+    int Id, string State, bool Draft, string Title, string Url,
+    string Author, string? AuthorNickname, string? AuthorAccountId,
+    string SourceBranch, string DestinationBranch, string HeadCommit, string? UpdatedOn,
+    List<string> ApprovedBy, string Build, List<CommitBuildStatus> BuildStatuses);
 public record PullRequestComment(int Id, string Author, string? CreatedOn, string? UpdatedOn, string? InlinePath, int? InlineLine, int? ParentId, string Text);
 public record ConfluencePageMeta(string Id, string Title, string SpaceId, string Status, int VersionNumber, string? ParentId);
 public record ConfluencePageCreated(string Id, string Title, string Status, string? WebUi, int? Version = null);

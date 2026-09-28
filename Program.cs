@@ -516,6 +516,18 @@ async Task<int> HandleBitbucket(string[] args)
             return 0;
         }
 
+        case "pr-get" when rest.Length >= 1:
+        {
+            if (!int.TryParse(rest[0], out int getPrId))
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb pr-get PR_ID   (PR details + head-commit build status as JSON)");
+                return 1;
+            }
+            var detail = await client.GetPullRequestAsync(getPrId);
+            Console.WriteLine(JsonSerializer.Serialize(detail, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
         case "pr-body" when rest.Length >= 1:
         {
             if (!int.TryParse(rest[0], out int bodyPrId))
@@ -606,11 +618,14 @@ async Task<int> HandleBitbucket(string[] args)
         {
             if (!int.TryParse(rest[0], out int commentPrId))
             {
-                Console.Error.WriteLine("Usage: atl-cli bb pr-comment PR_ID \"text\" | --body-file FILE [--parent COMMENT_ID]");
+                Console.Error.WriteLine("Usage: atl-cli bb pr-comment PR_ID \"text\" | --body-file FILE [--parent COMMENT_ID] [--file PATH [--line N] [--old]]");
                 return 1;
             }
             string? commentText = null;
             int? parentId = null;
+            string? inlinePath = null;
+            int? inlineLine = null;
+            bool oldSide = false;
             for (int i = 1; i < rest.Length; i++)
             {
                 switch (rest[i])
@@ -623,6 +638,9 @@ async Task<int> HandleBitbucket(string[] args)
                         break;
                     }
                     case "--parent" when i + 1 < rest.Length && int.TryParse(rest[i + 1], out var pv): parentId = pv; i++; break;
+                    case "--file" when i + 1 < rest.Length: inlinePath = rest[++i]; break;
+                    case "--line" when i + 1 < rest.Length && int.TryParse(rest[i + 1], out var lv): inlineLine = lv; i++; break;
+                    case "--old": oldSide = true; break;
                     default:
                         if (!rest[i].StartsWith("--")) commentText = rest[i];
                         break;
@@ -630,10 +648,15 @@ async Task<int> HandleBitbucket(string[] args)
             }
             if (string.IsNullOrWhiteSpace(commentText))
             {
-                Console.Error.WriteLine("Usage: atl-cli bb pr-comment PR_ID \"text\" | --body-file FILE [--parent COMMENT_ID]");
+                Console.Error.WriteLine("Usage: atl-cli bb pr-comment PR_ID \"text\" | --body-file FILE [--parent COMMENT_ID] [--file PATH [--line N] [--old]]");
                 return 1;
             }
-            var posted = await client.PostPullRequestCommentAsync(commentPrId, commentText, parentId);
+            if (inlineLine is not null && inlinePath is null)
+            {
+                Console.Error.WriteLine("--line needs --file PATH (repo-relative)");
+                return 1;
+            }
+            var posted = await client.PostPullRequestCommentAsync(commentPrId, commentText, parentId, inlinePath, inlineLine, oldSide);
             Console.WriteLine(JsonSerializer.Serialize(posted, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
         }
@@ -1044,6 +1067,8 @@ int PrintUsage()
       atl-cli bb env-vars [ENVIRONMENT] [--key KEY]  Deployment environment variables (JSON; secured values never shown).
                                                      No ENVIRONMENT lists the environments; --key prints one bare value.
       atl-cli bb pr PROJ-101 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
+      atl-cli bb pr-get PR_ID                         One PR as JSON: author, state, draft, head commit, approvals,
+                                                     and Build (PENDING|INPROGRESS|SUCCESSFUL|FAILED) for that commit
       atl-cli bb pr-body PR_ID                        Print a PR's current description (for get-then-edit round-tripping)
       atl-cli bb upload FILE [FILE ...]               Upload to repo Downloads; prints the URL and markdown (for PR images)
       atl-cli bb pr-create --source BRANCH --title "..." [--dest develop] [--description... | --description-file FILE] [--draft]
@@ -1054,6 +1079,8 @@ int PrintUsage()
       atl-cli bb pr-comment PR_ID "text"             Add a PR comment (markdown)
       atl-cli bb pr-comment PR_ID --body-file FILE   Add a PR comment from a file
                                                      Add [--parent COMMENT_ID] to reply in an existing thread
+                                                     Add --file PATH [--line N] for an inline comment (N = line in the
+                                                     new version; --old anchors N to the old version, for removed lines)
       atl-cli bb pr-comment-edit PR_ID COMMENT_ID "text" | --body-file FILE
                                                  Replace a PR comment's body (author only)
       atl-cli bb pr-resolve PR_ID COMMENT_ID        Mark a comment thread resolved ([--undo] reopens it)
