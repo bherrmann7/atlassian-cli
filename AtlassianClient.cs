@@ -1165,6 +1165,43 @@ public partial class AtlassianClient
         return results;
     }
 
+    // Every PR in the repo in the given states (default OPEN), newest update first. Follows `next` up to `limit`.
+    public async Task<List<RepoPullRequest>> GetRepoPullRequestsAsync(string? state = null, int limit = 50)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var url = $"{repoPath}/pullrequests?pagelen=50&sort=-updated_on";
+        foreach (var s in (string.IsNullOrEmpty(state) ? "OPEN" : state).Split(',', StringSplitOptions.RemoveEmptyEntries))
+            url += $"&state={Uri.EscapeDataString(s.Trim().ToUpper())}";
+
+        var results = new List<RepoPullRequest>();
+        while (url != null && results.Count < limit)
+        {
+            var resp = await _bbHttp.GetAsync(url);
+            resp.EnsureSuccessStatusCode();
+            using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+            foreach (var pr in doc.RootElement.GetProperty("values").EnumerateArray())
+            {
+                if (results.Count >= limit) break;
+                var author = pr.TryGetProperty("author", out var a) && a.ValueKind == JsonValueKind.Object ? a : default;
+                results.Add(new RepoPullRequest(
+                    pr.GetProperty("id").GetInt32(),
+                    Str(pr, "state") ?? "",
+                    pr.TryGetProperty("draft", out var d) && d.ValueKind == JsonValueKind.True,
+                    Str(pr, "title") ?? "",
+                    pr.GetProperty("links").GetProperty("html").GetProperty("href").GetString() ?? "",
+                    author.ValueKind == JsonValueKind.Object ? Str(author, "display_name") ?? "" : "",
+                    author.ValueKind == JsonValueKind.Object ? Str(author, "account_id") : null,
+                    pr.GetProperty("source").GetProperty("branch").GetProperty("name").GetString() ?? "",
+                    Str(pr, "updated_on")));
+            }
+            url = doc.RootElement.TryGetProperty("next", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
+        }
+        return results;
+
+        static string? Str(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    }
+
     // Fetch a single PR's current description (Bitbucket "markdown"-rendered body). Returns it verbatim
     // so it can be round-tripped straight back through pr-edit --description-file without losing edits.
     public async Task<string> GetPullRequestBodyAsync(int prId)
@@ -1864,6 +1901,7 @@ public record PipelineStepsReport(
 public record PipelineWatchState(
     int BuildNumber, string State, string? Stage, string? Result, string? PausedStep,
     bool Paused, bool Finished);
+public record RepoPullRequest(int Id, string State, bool Draft, string Title, string Url, string Author, string? AuthorAccountId, string SourceBranch, string? UpdatedOn);
 public record PullRequestInfo(int Id, string State, string Title, string Url, string SourceBranch, string? ClosedOn);
 public record CommitBuildStatus(string Key, string? Name, string State, string? Url, string? UpdatedOn);
 public record PullRequestDetail(

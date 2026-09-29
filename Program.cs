@@ -504,6 +504,20 @@ async Task<int> HandleBitbucket(string[] args)
             Console.WriteLine(JsonSerializer.Serialize(prs, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
 
+        case "prs":
+        {
+            string? prsState = null; int prsLimit = 50;
+            for (int i = 0; i < rest.Length; i++)
+            {
+                if (rest[i] == "--state" && i + 1 < rest.Length) prsState = rest[++i];
+                else if (rest[i].StartsWith("--state=")) prsState = rest[i].Substring("--state=".Length);
+                else if (rest[i] == "--limit" && i + 1 < rest.Length && int.TryParse(rest[++i], out var l)) prsLimit = l;
+            }
+            var repoPrs = await client.GetRepoPullRequestsAsync(prsState, prsLimit);
+            Console.WriteLine(JsonSerializer.Serialize(repoPrs, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
         case "upload" when rest.Length >= 1:
         {
             var files = rest.Where(a => !a.StartsWith("--")).ToArray();
@@ -1149,6 +1163,7 @@ int PrintUsage()
       atl-cli bb env-vars [ENVIRONMENT] [--key KEY]  Deployment environment variables (JSON; secured values never shown).
                                                      No ENVIRONMENT lists the environments; --key prints one bare value.
       atl-cli bb pr PROJ-101 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
+      atl-cli bb prs [--state OPEN|MERGED|...] [--limit N]  Every PR in the repo (default OPEN, 50), newest update first (JSON)
       atl-cli bb pr-get PR_ID                         One PR as JSON: author, state, draft, head commit, approvals,
                                                      and Build (PENDING|INPROGRESS|SUCCESSFUL|FAILED) for that commit
       atl-cli bb pr-body PR_ID                        Print a PR's current description (for get-then-edit round-tripping)
