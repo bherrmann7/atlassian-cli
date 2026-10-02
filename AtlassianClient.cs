@@ -1388,6 +1388,20 @@ public partial class AtlassianClient
         return doc.RootElement.Clone();
     }
 
+    // Delete a PR comment. Bitbucket answers 204 and keeps the comment as a "deleted" stub, which
+    // GetPullRequestCommentsAsync already skips. Only the comment's author (or a repo admin) can do it.
+    public async Task<string> DeletePullRequestCommentAsync(int prId, int commentId)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var resp = await _bbHttp.DeleteAsync($"{repoPath}/pullrequests/{prId}/comments/{commentId}");
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Delete comment {commentId} on pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        return $"Deleted comment {commentId} on pull request {prId}";
+    }
+
     // Mark a comment thread resolved (or reopen it with resolved: false).
     //
     // Send NO request body. The endpoint takes none, and posting an empty body with

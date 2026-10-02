@@ -723,6 +723,43 @@ async Task<int> HandleBitbucket(string[] args)
             return 0;
         }
 
+        case "pr-comment-delete" when rest.Length >= 2:
+        {
+            const string deleteUsage = "Usage: atl-cli bb pr-comment-delete PR_ID COMMENT_ID [--yes]   (COMMENT_ID comes from pr-comments)";
+            if (!int.TryParse(rest[0], out int delPrId) || !int.TryParse(rest[1], out int delCommentId))
+            {
+                Console.Error.WriteLine(deleteUsage);
+                return 1;
+            }
+            var confirmed = rest.Skip(2).Any(a => a == "--yes");
+
+            // Same posture as jira comment-delete: a bare invocation shows who wrote the comment, when,
+            // and how it opens, and changes nothing. An id alone cannot be checked by eye.
+            var listed = await client.GetPullRequestCommentsAsync(delPrId);
+            var match = listed.FirstOrDefault(c => c.Id == delCommentId);
+            if (match is null)
+            {
+                Console.Error.WriteLine($"No comment {delCommentId} on pull request {delPrId}. Run: atl-cli bb pr-comments {delPrId}");
+                return 1;
+            }
+
+            if (!confirmed)
+            {
+                var preview = match.Text.Replace("\r", " ").Replace("\n", " ").Trim();
+                if (preview.Length > 120) { preview = preview[..120] + "..."; }
+                Console.WriteLine($"Would delete comment {delCommentId} on pull request {delPrId}");
+                Console.WriteLine($"  author:  {match.Author}");
+                Console.WriteLine($"  created: {match.CreatedOn}");
+                Console.WriteLine($"  starts:  {preview}");
+                Console.WriteLine();
+                Console.WriteLine("This cannot be undone. Re-run with --yes to delete it.");
+                return 1;
+            }
+
+            Console.WriteLine(await client.DeletePullRequestCommentAsync(delPrId, delCommentId));
+            return 0;
+        }
+
         case "pr-resolve" when rest.Length >= 2:
         {
             if (!int.TryParse(rest[0], out int resolvePrId) || !int.TryParse(rest[1], out int resolveCommentId))
@@ -1180,6 +1217,9 @@ int PrintUsage()
                                                      new version; --old anchors N to the old version, for removed lines)
       atl-cli bb pr-comment-edit PR_ID COMMENT_ID "text" | --body-file FILE
                                                  Replace a PR comment's body (author only)
+      atl-cli bb pr-comment-delete PR_ID COMMENT_ID [--yes]
+                                                 Delete a PR comment (author only). Without --yes, shows
+                                                 who wrote it, when, and how it opens
       atl-cli bb pr-resolve PR_ID COMMENT_ID        Mark a comment thread resolved ([--undo] reopens it)
 
     Confluence:
