@@ -157,14 +157,7 @@ public partial class AtlassianClient
     {
         // Wrap plain text in a minimal ADF document: one paragraph per line so newlines
         // render. Empty lines become empty paragraphs (an ADF text node may not be "").
-        var paragraphs = text.Replace("\r\n", "\n").Split('\n')
-            .Select(line => line.Length == 0
-                ? (object)new { type = "paragraph" }
-                : new { type = "paragraph", content = new[] { new { type = "text", text = line } } })
-            .ToArray();
-
-        var payload = new { body = new { type = "doc", version = 1, content = paragraphs } };
-        var json = JsonSerializer.Serialize(payload);
+        var json = $"{{\"body\":{PlainTextToAdfJson(text)}}}";
         var content = new StringContent(json, Encoding.UTF8, "application/json");
         var resp = await _jiraHttp.PostAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}/comment", content);
         if (!resp.IsSuccessStatusCode)
@@ -174,6 +167,17 @@ public partial class AtlassianClient
         }
         var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
         return doc.RootElement;
+    }
+
+    public static string PlainTextToAdfJson(string text)
+    {
+        var paragraphs = text.Replace("\r\n", "\n").Split('\n')
+            .Select(line => line.Length == 0
+                ? (object)new { type = "paragraph" }
+                : new { type = "paragraph", content = new[] { new { type = "text", text = line } } })
+            .ToArray();
+
+        return JsonSerializer.Serialize(new { type = "doc", version = 1, content = paragraphs });
     }
 
     public async Task<JsonElement> CreateCommentAdfAsync(string key, string adfDocJson)
@@ -205,6 +209,34 @@ public partial class AtlassianClient
         {
             var errBody = await resp.Content.ReadAsStringAsync();
             throw new HttpRequestException($"List comments failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement.Clone();
+    }
+
+    // Replace one comment's body in place. The id, author and created date are kept; Jira stamps
+    // "updated" and shows the comment as edited. adfDocJson is a raw ADF document, sent as-is.
+    public async Task<JsonElement> UpdateIssueCommentAdfAsync(string key, string commentId, string adfDocJson)
+    {
+        using (JsonDocument.Parse(adfDocJson)) { }
+
+        var url = $"/rest/api/3/issue/{Uri.EscapeDataString(key)}/comment/{Uri.EscapeDataString(commentId)}";
+        var content = new StringContent($"{{\"body\":{adfDocJson}}}", Encoding.UTF8, "application/json");
+        var resp = await _jiraHttp.PutAsync(url, content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            if (resp.StatusCode == HttpStatusCode.NotFound)
+            {
+                throw new HttpRequestException($"No comment {commentId} on {key}. Run: atl-cli jira comments {key}");
+            }
+            if (resp.StatusCode == HttpStatusCode.Forbidden)
+            {
+                throw new HttpRequestException(
+                    $"Not allowed to edit comment {commentId} on {key}. Jira permissions separate editing your own "
+                    + $"comments from editing anyone's, and this token may only hold the former: {errBody}");
+            }
+            throw new HttpRequestException($"Edit comment {commentId} on {key} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
         }
         using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
         return doc.RootElement.Clone();

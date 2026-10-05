@@ -211,6 +211,49 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "comment-edit" when rest.Length >= 2:
+        {
+            const string editUsage = "Usage: atl-cli jira comment-edit KEY ID \"text\"  |  --body-file FILE (plain text)  |  --md-file FILE (markdown)  |  --adf-file FILE (raw ADF JSON)   (replaces the body; ID comes from jira comments)";
+            var key = rest[0];
+            var commentId = rest[1];
+            string? adfJson = null;
+            for (int i = 2; i < rest.Length; i++)
+            {
+                if (rest[i] == "--body-file" && i + 1 < rest.Length)
+                {
+                    var file = rest[++i];
+                    if (!File.Exists(file)) { Console.Error.WriteLine($"Body file not found: {file}"); return 1; }
+                    adfJson = AtlassianClient.PlainTextToAdfJson(await File.ReadAllTextAsync(file));
+                }
+                else if (rest[i] == "--adf-file" && i + 1 < rest.Length)
+                {
+                    var file = rest[++i];
+                    if (!File.Exists(file)) { Console.Error.WriteLine($"ADF file not found: {file}"); return 1; }
+                    adfJson = await File.ReadAllTextAsync(file);
+                }
+                else if (rest[i] == "--md-file" && i + 1 < rest.Length)
+                {
+                    var file = rest[++i];
+                    if (!File.Exists(file)) { Console.Error.WriteLine($"Markdown file not found: {file}"); return 1; }
+                    adfJson = Adf.FromMarkdown(await File.ReadAllTextAsync(file));
+                }
+                else if (!rest[i].StartsWith("--") && rest[i].Length > 0)
+                {
+                    adfJson ??= AtlassianClient.PlainTextToAdfJson(rest[i]);
+                }
+            }
+
+            if (adfJson is null)
+            {
+                Console.Error.WriteLine(editUsage);
+                return 1;
+            }
+
+            var edited = await client.UpdateIssueCommentAdfAsync(key, commentId, adfJson);
+            Console.WriteLine(JsonSerializer.Serialize(edited, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
         case "comment-delete" when rest.Length >= 2:
         {
             var key = rest[0];
@@ -1171,6 +1214,8 @@ int PrintUsage()
       atl-cli jira comment PROJ-101 --adf-file FILE  Add a comment from a raw ADF JSON doc (rich formatting)
       atl-cli jira comment PROJ-101 --md-file FILE   Add a comment from markdown (converted to ADF)
       atl-cli jira comments PROJ-101                 List an issue's comments (JSON, incl. ids)
+      atl-cli jira comment-edit PROJ-101 ID "text" | --body-file FILE | --md-file FILE | --adf-file FILE
+                                                     Replace a comment's body in place (keeps its id and date)
       atl-cli jira comment-delete PROJ-101 ID [--yes]
                                                      Delete one comment. Without --yes, prints what
                                                      would go and changes nothing. Irreversible.
@@ -1252,7 +1297,26 @@ static Dictionary<string, string> HelpTopics() => new(StringComparer.OrdinalIgno
                                 Headings, lists, code blocks and inline `code` survive.
       KEY --adf-file FILE       Raw ADF JSON document, posted as-is. Full control.
 
-    There is no edit: to change a comment, delete it and post a new one, or use the web UI.
+    To change an existing comment, use: atl-cli jira comment-edit KEY ID ...
+    """,
+
+    ["jira comment-edit"] = """
+    atl-cli jira comment-edit KEY ID <body>    REPLACE one comment's body. (ID comes from jira comments.)
+
+      KEY ID "text"             Plain text, converted to ADF.
+      KEY ID --body-file FILE   Plain text from a file, converted to ADF.
+      KEY ID --md-file FILE     Markdown from a file, converted to ADF.
+      KEY ID --adf-file FILE    Raw ADF JSON document, sent as-is. Full control.
+
+    The comment keeps its id, author and created date; Jira marks it as edited.
+
+    To change part of a comment, round-trip its ADF:
+      1. atl-cli jira comments PROJ-101 | jq '.comments[] | select(.id=="ID").body' > body.json
+      2. edit body.json
+      3. atl-cli jira comment-edit PROJ-101 ID --adf-file body.json
+
+    Jira permissions separate editing your OWN comments from editing anyone's. A 403 usually
+    means the token holds only the former and the comment belongs to someone else.
     """,
 
     ["jira comment-delete"] = """
