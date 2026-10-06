@@ -444,6 +444,33 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "label" when rest.Length >= 2:
+        {
+            var keys = new List<string>();
+            var add = new List<string>();
+            var remove = new List<string>();
+            for (int i = 0; i < rest.Length; i++)
+            {
+                if (rest[i] == "--add" && i + 1 < rest.Length) add.Add(rest[++i]);
+                else if (rest[i] == "--remove" && i + 1 < rest.Length) remove.Add(rest[++i]);
+                else if (!rest[i].StartsWith("--")) keys.Add(rest[i]);
+            }
+
+            // Jira rejects a label containing whitespace with an opaque 400; say why up front.
+            if (keys.Count == 0 || add.Count + remove.Count == 0 || add.Concat(remove).Any(l => l.Any(char.IsWhiteSpace)))
+            {
+                Console.Error.WriteLine("Usage: atl-cli jira label KEY [KEY ...] --add LABEL [--remove LABEL]   (labels cannot contain spaces)");
+                return 1;
+            }
+
+            foreach (var key in keys)
+            {
+                await client.UpdateLabelsAsync(key, add, remove);
+                Console.WriteLine($"{key} labels updated");
+            }
+            return 0;
+        }
+
         case "summary" when rest.Length >= 2:
         {
             var key = rest[0];
@@ -1226,6 +1253,8 @@ int PrintUsage()
       atl-cli jira describe PROJ-101 --md-file FILE  Set the description from markdown (converted to ADF)
       atl-cli jira summary PROJ-101 "new title"      Set the summary/title (replaces existing)
       atl-cli jira summary PROJ-101 --body-file FILE Set the summary from a file (first line wins; trimmed)
+      atl-cli jira label PROJ-101 [PROJ-102 ...] --add LABEL [--remove LABEL]
+                                                     Add/remove labels, leaving the issue's other labels alone
       atl-cli jira links PROJ-101                  An issue's links with their ids (JSON)
       atl-cli jira unlink LINK_ID                  Remove one link, by id from `jira links`
       atl-cli jira link PROJ-101 PROJ-102 [--type Relates]

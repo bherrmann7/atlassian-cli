@@ -393,6 +393,18 @@ public partial class AtlassianClient
         await PutIssueFieldsAsync(key, json, "Set summary");
     }
 
+    // Labels go through "update" add/remove operations, not "fields", so the issue's other
+    // labels are left alone. Adding one it already has, or removing one it lacks, is a no-op.
+    public async Task UpdateLabelsAsync(string key, IEnumerable<string> add, IEnumerable<string> remove)
+    {
+        var ops = add.Select(l => new Dictionary<string, string> { ["add"] = l })
+            .Concat(remove.Select(l => new Dictionary<string, string> { ["remove"] = l }))
+            .ToList();
+        var payload = new { update = new { labels = ops } };
+        var json = JsonSerializer.Serialize(payload);
+        await PutIssueFieldsAsync(key, json, "Update labels");
+    }
+
     private async Task PutIssueFieldsAsync(string key, string json, string operation)
     {
         var content = new StringContent(json, Encoding.UTF8, "application/json");
