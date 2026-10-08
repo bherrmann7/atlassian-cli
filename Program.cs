@@ -853,6 +853,19 @@ async Task<int> HandleBitbucket(string[] args)
             return 0;
         }
 
+        case "pr-task-resolve" when rest.Length >= 2:
+        {
+            if (!int.TryParse(rest[0], out int taskResolvePrId) || !int.TryParse(rest[1], out int resolveTaskId))
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb pr-task-resolve PR_ID TASK_ID [--undo]   (TASK_ID comes from pr-task)");
+                return 1;
+            }
+            bool reopenTask = rest.Skip(2).Any(a => a == "--undo");
+            var taskStateJson = await client.SetPullRequestTaskStateAsync(taskResolvePrId, resolveTaskId, resolved: !reopenTask);
+            Console.WriteLine(JsonSerializer.Serialize(taskStateJson, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
         case "pr-resolve" when rest.Length >= 2:
         {
             if (!int.TryParse(rest[0], out int resolvePrId) || !int.TryParse(rest[1], out int resolveCommentId))
@@ -1320,6 +1333,8 @@ int PrintUsage()
       atl-cli bb pr-resolve PR_ID COMMENT_ID        Mark a comment thread resolved ([--undo] reopens it)
       atl-cli bb pr-task PR_ID "text" [--comment COMMENT_ID]
                                                  Create a PR task, attached to a comment when --comment is given
+      atl-cli bb pr-task-resolve PR_ID TASK_ID [--undo]
+                                                 Mark a PR task resolved ([--undo] reopens it)
 
     Confluence:
       atl-cli wiki page <id-or-url>                  Get page content (text)

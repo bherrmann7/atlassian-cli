@@ -1451,6 +1451,23 @@ public partial class AtlassianClient
         return doc.RootElement.Clone();
     }
 
+    // Mark a PR task resolved (or reopen it). Tasks are separate from comment threads: resolving the
+    // thread a task hangs off does not close the task.
+    public async Task<JsonElement> SetPullRequestTaskStateAsync(int prId, int taskId, bool resolved)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var json = JsonSerializer.Serialize(new { state = resolved ? "RESOLVED" : "UNRESOLVED" });
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var resp = await _bbHttp.PutAsync($"{repoPath}/pullrequests/{prId}/tasks/{taskId}", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Update task {taskId} on pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement.Clone();
+    }
+
     // Delete a PR comment. Bitbucket answers 204 and keeps the comment as a "deleted" stub, which
     // GetPullRequestCommentsAsync already skips. Only the comment's author (or a repo admin) can do it.
     public async Task<string> DeletePullRequestCommentAsync(int prId, int commentId)
