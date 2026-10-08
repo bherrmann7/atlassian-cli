@@ -1520,6 +1520,22 @@ public partial class AtlassianClient
         throw new HttpRequestException($"{verb} comment {commentId} on pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
     }
 
+    // Declines (closes without merging) a pull request. Like the resolve endpoint, this POST takes no
+    // body. Declining a PR that is already declined or merged returns 4xx, which is reported as-is.
+    public async Task<string> DeclinePullRequestAsync(int prId)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var resp = await _bbHttp.PostAsync($"{repoPath}/pullrequests/{prId}/decline", null);
+
+        if (resp.IsSuccessStatusCode)
+        {
+            return $"Pull request {prId} declined";
+        }
+
+        var errBody = await resp.Content.ReadAsStringAsync();
+        throw new HttpRequestException($"Decline pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+    }
+
     // Bitbucket only auto-applies a repo's default reviewers when a PR is created through the web UI;
     // the create-PR REST endpoint ignores them. To match the UI we resolve them ourselves. The author
     // can't be their own reviewer, so excludeUuid (the PR author) is dropped from the list.

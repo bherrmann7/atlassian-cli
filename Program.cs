@@ -878,6 +878,17 @@ async Task<int> HandleBitbucket(string[] args)
             return 0;
         }
 
+        case "pr-decline" when rest.Length >= 1:
+        {
+            if (!int.TryParse(rest[0], out int declinePrId))
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb pr-decline PR_ID");
+                return 1;
+            }
+            Console.WriteLine(await client.DeclinePullRequestAsync(declinePrId));
+            return 0;
+        }
+
         case "pipeline-log" when rest.Length == 1:
             var failure = await client.GetPipelineFailureAsync(rest[0]);
             if (failure is null)
@@ -1335,6 +1346,7 @@ int PrintUsage()
                                                  Create a PR task, attached to a comment when --comment is given
       atl-cli bb pr-task-resolve PR_ID TASK_ID [--undo]
                                                  Mark a PR task resolved ([--undo] reopens it)
+      atl-cli bb pr-decline PR_ID                    Decline (close without merging) a pull request
 
     Confluence:
       atl-cli wiki page <id-or-url>                  Get page content (text)
