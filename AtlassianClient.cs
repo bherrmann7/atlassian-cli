@@ -1432,6 +1432,25 @@ public partial class AtlassianClient
         return doc.RootElement.Clone();
     }
 
+    // Create a PR task. With a comment id the task hangs off that comment's thread, which is how the
+    // Bitbucket UI's "create task" on a comment behaves; without one it is a PR-level task.
+    public async Task<JsonElement> CreatePullRequestTaskAsync(int prId, string text, int? commentId = null)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var fields = new Dictionary<string, object?> { ["content"] = new { raw = text } };
+        if (commentId is not null) fields["comment"] = new { id = commentId.Value };
+
+        var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        var resp = await _bbHttp.PostAsync($"{repoPath}/pullrequests/{prId}/tasks", content);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"Create task on pull request {prId} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        return doc.RootElement.Clone();
+    }
+
     // Delete a PR comment. Bitbucket answers 204 and keeps the comment as a "deleted" stub, which
     // GetPullRequestCommentsAsync already skips. Only the comment's author (or a repo admin) can do it.
     public async Task<string> DeletePullRequestCommentAsync(int prId, int commentId)

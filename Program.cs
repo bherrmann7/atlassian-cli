@@ -830,6 +830,29 @@ async Task<int> HandleBitbucket(string[] args)
             return 0;
         }
 
+        case "pr-task" when rest.Length >= 2:
+        {
+            if (!int.TryParse(rest[0], out int taskPrId))
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb pr-task PR_ID \"text\" [--comment COMMENT_ID]   (COMMENT_ID comes from pr-comments)");
+                return 1;
+            }
+            int? taskCommentId = null;
+            int commentFlag = Array.IndexOf(rest, "--comment");
+            if (commentFlag >= 0)
+            {
+                if (commentFlag + 1 >= rest.Length || !int.TryParse(rest[commentFlag + 1], out int parsedCommentId))
+                {
+                    Console.Error.WriteLine("--comment needs a numeric COMMENT_ID");
+                    return 1;
+                }
+                taskCommentId = parsedCommentId;
+            }
+            var taskJson = await client.CreatePullRequestTaskAsync(taskPrId, rest[1], taskCommentId);
+            Console.WriteLine(JsonSerializer.Serialize(taskJson, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
         case "pr-resolve" when rest.Length >= 2:
         {
             if (!int.TryParse(rest[0], out int resolvePrId) || !int.TryParse(rest[1], out int resolveCommentId))
@@ -1295,6 +1318,8 @@ int PrintUsage()
                                                  Delete a PR comment (author only). Without --yes, shows
                                                  who wrote it, when, and how it opens
       atl-cli bb pr-resolve PR_ID COMMENT_ID        Mark a comment thread resolved ([--undo] reopens it)
+      atl-cli bb pr-task PR_ID "text" [--comment COMMENT_ID]
+                                                 Create a PR task, attached to a comment when --comment is given
 
     Confluence:
       atl-cli wiki page <id-or-url>                  Get page content (text)
