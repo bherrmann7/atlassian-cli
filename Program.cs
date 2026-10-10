@@ -115,6 +115,14 @@ async Task<int> HandleJira(string[] args)
                     if (cm.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.Object)
                         Console.WriteLine(Adf.ToMarkdown(body));
                 }
+
+            // Images do not survive the markdown rendering, so say they are there to fetch.
+            if (fields.TryGetProperty("attachment", out var av) && av.ValueKind == JsonValueKind.Array && av.GetArrayLength() > 0)
+            {
+                Console.WriteLine($"\n--- attachments (atl-cli jira download {rest[0]} --all DIR)\n");
+                foreach (var a in av.EnumerateArray())
+                    Console.WriteLine($"- {(a.TryGetProperty("filename", out var afn) ? afn.GetString() : "?")}  (id {(a.TryGetProperty("id", out var aid) ? aid.GetString() : "?")})");
+            }
             return 0;
         }
 
@@ -512,6 +520,48 @@ async Task<int> HandleJira(string[] args)
             }
             await client.LinkIssuesAsync(fromKey, toKey, linkType);
             Console.WriteLine($"{fromKey} {linkType} {toKey}");
+            return 0;
+        }
+
+        case "attachments" when rest.Length == 1:
+        {
+            var atts = await client.ListIssueAttachmentsAsync(rest[0]);
+            Console.WriteLine(JsonSerializer.Serialize(atts, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        // Saves an issue's attachments locally. PATTERN is an attachment id or a case-insensitive
+        // piece of the filename; --all takes every one.
+        case "download" when rest.Length >= 2:
+        {
+            var key = rest[0];
+            var pattern = rest[1];
+            var outDir = rest.Length >= 3 && !rest[2].StartsWith("--") ? rest[2] : ".";
+            var all = pattern == "--all";
+
+            var atts = await client.ListIssueAttachmentsAsync(key);
+            var wanted = atts.Where(a => all || a.Id == pattern
+                || a.Filename.Contains(pattern, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (wanted.Count == 0)
+            {
+                Console.Error.WriteLine($"No attachment on {key} matches '{pattern}' ({atts.Count} on the issue).");
+                return 1;
+            }
+
+            Directory.CreateDirectory(outDir);
+            var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var a in wanted)
+            {
+                // The filename comes from the server, so keep only its last segment. Jira allows two
+                // attachments with the same name on one issue; the id keeps the second from
+                // overwriting the first.
+                var name = Path.GetFileName(a.Filename);
+                if (string.IsNullOrEmpty(name)) name = a.Id;
+                if (!used.Add(name)) { name = $"{a.Id}-{name}"; used.Add(name); }
+                var local = Path.Combine(outDir, name);
+                await client.DownloadIssueAttachmentAsync(a.Id, local);
+                Console.WriteLine(local);
+            }
             return 0;
         }
 
@@ -1294,6 +1344,9 @@ int PrintUsage()
                                                      Delete one comment. Without --yes, prints what
                                                      would go and changes nothing. Irreversible.
       atl-cli jira attach PROJ-101 shot.png [more...] Attach one or more files (images render inline)
+      atl-cli jira attachments PROJ-101              List an issue's attachments (JSON: id, filename, type, size)
+      atl-cli jira download PROJ-101 <pattern|id|--all> [dir]
+                                                     Save attachments locally; prints each saved path
       atl-cli jira describe PROJ-101 "text"          Set the description (plain text -> ADF; replaces existing)
       atl-cli jira describe PROJ-101 --body-file FILE Set the description from a plain-text file
       atl-cli jira describe PROJ-101 --adf-file FILE Set the description from a raw ADF JSON doc (rich formatting)

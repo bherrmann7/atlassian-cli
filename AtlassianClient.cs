@@ -275,6 +275,47 @@ public partial class AtlassianClient
         throw new HttpRequestException($"Delete comment {commentId} on {key} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
     }
 
+    public async Task<List<IssueAttachment>> ListIssueAttachmentsAsync(string key)
+    {
+        var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}?fields=attachment");
+        resp.EnsureSuccessStatusCode();
+        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+
+        var list = new List<IssueAttachment>();
+        if (!doc.RootElement.TryGetProperty("fields", out var fields)
+            || !fields.TryGetProperty("attachment", out var atts)
+            || atts.ValueKind != JsonValueKind.Array)
+            return list;
+
+        foreach (var a in atts.EnumerateArray())
+        {
+            string? Str(string name) => a.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            list.Add(new IssueAttachment(
+                Str("id") ?? "",
+                Str("filename") ?? "",
+                Str("mimeType") ?? "",
+                a.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number ? sz.GetInt64() : 0,
+                a.TryGetProperty("author", out var au) && au.TryGetProperty("displayName", out var dn) ? dn.GetString() ?? "" : "",
+                Str("created") ?? ""));
+        }
+        return list;
+    }
+
+    public async Task DownloadIssueAttachmentAsync(string attachmentId, string localPath)
+    {
+        // The content endpoint serves the file's own media type and rejects the client-wide
+        // Accept: application/json, so ask for anything. It answers with a redirect to a media
+        // host; HttpClient follows that and drops the Authorization header on the cross-host hop.
+        using var req = new HttpRequestMessage(
+            HttpMethod.Get, $"/rest/api/3/attachment/content/{Uri.EscapeDataString(attachmentId)}");
+        req.Headers.Accept.Clear();
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+        var resp = await _jiraHttp.SendAsync(req);
+        resp.EnsureSuccessStatusCode();
+        await using var fs = File.Create(localPath);
+        await resp.Content.CopyToAsync(fs);
+    }
+
     public async Task<JsonElement> AttachToIssueAsync(string key, string filePath)
     {
         // Jira's attachment endpoint is the one Jira API that is not JSON in: it takes a multipart
@@ -2000,6 +2041,7 @@ public record IssueSearchHit(string Key, string? Summary, string? Status, string
 public record SprintInfo(int Id, string Name, string State, int BoardId, string BoardName);
 public record PipelineStatus(string Status, int BuildNumber);
 public record IssueLinkInfo(string Id, string Type, string Relation, string OtherKey);
+public record IssueAttachment(string Id, string Filename, string MediaType, long Size, string Author, string Created);
 public record DeploymentVariable(string Key, string? Value, bool Secured);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
 public record PipelineStepInfo(string Name, string State, string? Result, DateTimeOffset? StartedOn, int? DurationSeconds);

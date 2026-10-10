@@ -143,6 +143,14 @@ atl-cli jira attach PROJ-101 before.png after.png run.log
 # rather than listing them as anonymous downloads. Every file is checked to exist before any
 # of them upload, so a typo cannot leave a half-attached ticket behind.
 
+# Jira — read an issue's attachments
+atl-cli jira attachments PROJ-101                 # JSON: id, filename, media type, size, author, created
+atl-cli jira download PROJ-101 --all shots        # every attachment into ./shots
+atl-cli jira download PROJ-101 screenshot shots   # filenames containing "screenshot"
+atl-cli jira download PROJ-101 94630              # one attachment by id, into the current directory
+# Prints the path of each file it saved. jira issue --text lists the attachments at the end, since
+# an image in a description or comment does not survive the markdown rendering.
+
 # Jira — search by JQL
 atl-cli jira search "project = PROJ AND status = 'In Progress'"
 atl-cli jira search "assignee = currentUser() ORDER BY created DESC" --limit 5
