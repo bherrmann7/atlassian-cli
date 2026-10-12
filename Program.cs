@@ -479,6 +479,15 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "assign" when rest.Length >= 2:
+        {
+            var key = rest[0];
+            var who = rest[1];
+            await client.SetAssigneeAsync(key, who == "--none" ? null : who);
+            Console.WriteLine(who == "--none" ? $"{key} unassigned" : $"{key} assigned to {who}");
+            return 0;
+        }
+
         case "summary" when rest.Length >= 2:
         {
             var key = rest[0];
@@ -1352,6 +1361,8 @@ int PrintUsage()
       atl-cli jira describe PROJ-101 --adf-file FILE Set the description from a raw ADF JSON doc (rich formatting)
       atl-cli jira describe PROJ-101 --md-file FILE  Set the description from markdown (converted to ADF)
       atl-cli jira summary PROJ-101 "new title"      Set the summary/title (replaces existing)
+      atl-cli jira assign PROJ-101 @me|ACCOUNT_ID|--none
+                                                     Set or clear the assignee
       atl-cli jira summary PROJ-101 --body-file FILE Set the summary from a file (first line wins; trimmed)
       atl-cli jira label PROJ-101 [PROJ-102 ...] --add LABEL [--remove LABEL]
                                                      Add/remove labels, leaving the issue's other labels alone

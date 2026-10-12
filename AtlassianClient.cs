@@ -426,6 +426,15 @@ public partial class AtlassianClient
         await PutIssueFieldsAsync(key, json, "Set description");
     }
 
+    // Assignee is set by account id; "@me" resolves to the caller, null unassigns.
+    public async Task SetAssigneeAsync(string key, string? assignee)
+    {
+        var accountId = assignee == "@me" ? await GetMyAccountIdAsync() : assignee;
+        var payload = new { fields = new { assignee = accountId == null ? null : new { accountId } } };
+        var json = JsonSerializer.Serialize(payload);
+        await PutIssueFieldsAsync(key, json, "Set assignee");
+    }
+
     // Summary is a plain string field, not ADF — no document wrapping, unlike description.
     public async Task SetSummaryAsync(string key, string summary)
     {
