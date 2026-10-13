@@ -553,38 +553,51 @@ public partial class AtlassianClient
     public async Task<List<IssueSearchHit>> SearchIssuesAsync(string jql, int maxResults = 25, string? fields = null)
     {
         fields ??= "summary,status,issuetype,assignee";
-        var url = $"/rest/api/3/search/jql?jql={Uri.EscapeDataString(jql)}&fields={Uri.EscapeDataString(fields)}&maxResults={maxResults}";
-        var resp = await _jiraHttp.GetAsync(url);
-        if (!resp.IsSuccessStatusCode)
-        {
-            // A malformed JQL comes back 400 with the parser's complaint in errorMessages;
-            // EnsureSuccessStatusCode would discard exactly the part worth reading.
-            var err = await resp.Content.ReadAsStringAsync();
-            throw new HttpRequestException($"jira search failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {err[..Math.Min(err.Length, 400)]}");
-        }
-
-        var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
         var hits = new List<IssueSearchHit>();
-        if (!doc.RootElement.TryGetProperty("issues", out var issues)) return hits;
+        string? pageToken = null;
 
-        foreach (var issue in issues.EnumerateArray())
+        // Jira caps a page at 100 whatever maxResults asks for, so a larger limit means
+        // following nextPageToken until the limit is met or the last page is reached.
+        while (hits.Count < maxResults)
         {
-            var key = issue.GetProperty("key").GetString()!;
-            var f = issue.GetProperty("fields");
-            hits.Add(new IssueSearchHit(
-                key,
-                Str(f, "summary"),
-                Nested(f, "status", "name"),
-                Nested(f, "issuetype", "name"),
-                Nested(f, "assignee", "displayName")));
+            var url = $"/rest/api/3/search/jql?jql={Uri.EscapeDataString(jql)}&fields={Uri.EscapeDataString(fields)}&maxResults={Math.Min(maxResults - hits.Count, 100)}";
+            if (pageToken != null) url += $"&nextPageToken={Uri.EscapeDataString(pageToken)}";
+            var resp = await _jiraHttp.GetAsync(url);
+            if (!resp.IsSuccessStatusCode)
+            {
+                // A malformed JQL comes back 400 with the parser's complaint in errorMessages;
+                // EnsureSuccessStatusCode would discard exactly the part worth reading.
+                var err = await resp.Content.ReadAsStringAsync();
+                throw new HttpRequestException($"jira search failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {err[..Math.Min(err.Length, 400)]}");
+            }
+
+            var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+            if (!doc.RootElement.TryGetProperty("issues", out var issues) || issues.GetArrayLength() == 0) break;
+
+            foreach (var issue in issues.EnumerateArray())
+            {
+                if (hits.Count >= maxResults) break;
+                var key = issue.GetProperty("key").GetString()!;
+                // Absent when --fields names only "key": Jira then sends no fields object at all.
+                issue.TryGetProperty("fields", out var f);
+                hits.Add(new IssueSearchHit(
+                    key,
+                    Str(f, "summary"),
+                    Nested(f, "status", "name"),
+                    Nested(f, "issuetype", "name"),
+                    Nested(f, "assignee", "displayName")));
+            }
+
+            pageToken = Str(doc.RootElement, "nextPageToken");
+            if (pageToken == null) break;
         }
         return hits;
 
         static string? Str(JsonElement e, string name) =>
-            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
         static string? Nested(JsonElement e, string name, string child) =>
-            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object ? Str(v, child) : null;
+            e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object ? Str(v, child) : null;
     }
 
     // The Agile API lives under a different path prefix but the same host and auth

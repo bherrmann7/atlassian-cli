@@ -1513,6 +1513,9 @@ static Dictionary<string, string> HelpTopics() => new(StringComparer.OrdinalIgno
     not Jira's {issues:[...]} envelope, and no accountId. To get an accountId (for an ADF mention
     node, say), run `atl-cli jira issue PROJ-101` on an issue that person is assigned to and read
     .fields.assignee.accountId.
+
+    --limit defaults to 25 and may exceed Jira's 100-per-page cap; further pages are fetched
+    until the limit is met.
     """,
 
     ["bb env-vars"] = """
