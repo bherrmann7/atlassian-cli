@@ -574,6 +574,13 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "history" when rest.Length == 1:
+        {
+            var history = await client.GetStatusHistoryAsync(rest[0]);
+            Console.WriteLine(JsonSerializer.Serialize(history, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
         case "links" when rest.Length == 1:
         {
             var links = await client.GetIssueLinksAsync(rest[0]);
@@ -1366,6 +1373,7 @@ int PrintUsage()
       atl-cli jira summary PROJ-101 --body-file FILE Set the summary from a file (first line wins; trimmed)
       atl-cli jira label PROJ-101 [PROJ-102 ...] --add LABEL [--remove LABEL]
                                                      Add/remove labels, leaving the issue's other labels alone
+      atl-cli jira history PROJ-101                Every status change, oldest first (JSON: At, By, From, To)
       atl-cli jira links PROJ-101                  An issue's links with their ids (JSON)
       atl-cli jira unlink LINK_ID                  Remove one link, by id from `jira links`
       atl-cli jira link PROJ-101 PROJ-102 [--type Relates]

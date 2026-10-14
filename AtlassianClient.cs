@@ -117,6 +117,41 @@ public partial class AtlassianClient
 
     // An issue's links, each with the link id unlink needs, its type, which side this issue is on,
     // and the other issue. The same pair can be linked twice (once from each side); this shows both.
+    // Every status change an issue has been through, oldest first. The changelog endpoint
+    // pages at 100 entries and reports isLast, so it is followed to the end.
+    public async Task<List<StatusChange>> GetStatusHistoryAsync(string key)
+    {
+        var changes = new List<StatusChange>();
+        for (int startAt = 0; ;)
+        {
+            var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}/changelog?startAt={startAt}&maxResults=100");
+            if (!resp.IsSuccessStatusCode)
+            {
+                var errBody = await resp.Content.ReadAsStringAsync();
+                throw new HttpRequestException($"Get history for {key} failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+            }
+            using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+            if (!doc.RootElement.TryGetProperty("values", out var values) || values.GetArrayLength() == 0) break;
+            foreach (var entry in values.EnumerateArray())
+            {
+                if (!entry.TryGetProperty("items", out var items)) continue;
+                foreach (var item in items.EnumerateArray())
+                {
+                    if (Text(item, "field") != "status") continue;
+                    var by = entry.TryGetProperty("author", out var author) && author.ValueKind == JsonValueKind.Object
+                        ? Text(author, "displayName") : "";
+                    changes.Add(new StatusChange(Text(entry, "created"), by, Text(item, "fromString"), Text(item, "toString")));
+                }
+            }
+            startAt += values.GetArrayLength();
+            if (doc.RootElement.TryGetProperty("isLast", out var last) && last.ValueKind == JsonValueKind.True) break;
+        }
+        return changes;
+
+        static string Text(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+    }
+
     public async Task<List<IssueLinkInfo>> GetIssueLinksAsync(string key)
     {
         var resp = await _jiraHttp.GetAsync($"/rest/api/3/issue/{Uri.EscapeDataString(key)}?fields=issuelinks");
@@ -2062,6 +2097,7 @@ public record IssueStatusInfo(string Status, string? StatusDate);
 public record IssueSearchHit(string Key, string? Summary, string? Status, string? IssueType, string? Assignee);
 public record SprintInfo(int Id, string Name, string State, int BoardId, string BoardName);
 public record PipelineStatus(string Status, int BuildNumber);
+public record StatusChange(string At, string By, string From, string To);
 public record IssueLinkInfo(string Id, string Type, string Relation, string OtherKey);
 public record IssueAttachment(string Id, string Filename, string MediaType, long Size, string Author, string Created);
 public record DeploymentVariable(string Key, string? Value, bool Secured);
