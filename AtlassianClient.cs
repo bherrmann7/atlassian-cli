@@ -478,6 +478,16 @@ public partial class AtlassianClient
         await PutIssueFieldsAsync(key, json, "Set summary");
     }
 
+    // Jira allows an issue-type change through edit only between types that share a workflow and
+    // field configuration (Story <-> Task in most projects). Anything else is a web-UI "Move", and
+    // the PUT answers 400 with Jira's reason, which PutIssueFieldsAsync surfaces.
+    public async Task SetIssueTypeAsync(string key, string typeName)
+    {
+        var payload = new { fields = new { issuetype = new { name = typeName } } };
+        var json = JsonSerializer.Serialize(payload);
+        await PutIssueFieldsAsync(key, json, "Set issue type");
+    }
+
     // Labels go through "update" add/remove operations, not "fields", so the issue's other
     // labels are left alone. Adding one it already has, or removing one it lacks, is a no-op.
     public async Task UpdateLabelsAsync(string key, IEnumerable<string> add, IEnumerable<string> remove)

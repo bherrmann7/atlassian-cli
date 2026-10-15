@@ -488,6 +488,15 @@ async Task<int> HandleJira(string[] args)
             return 0;
         }
 
+        case "type" when rest.Length >= 2:
+        {
+            var key = rest[0];
+            var typeName = rest[1];
+            await client.SetIssueTypeAsync(key, typeName);
+            Console.WriteLine($"{key} issue type -> {typeName}");
+            return 0;
+        }
+
         case "summary" when rest.Length >= 2:
         {
             var key = rest[0];
@@ -1368,6 +1377,7 @@ int PrintUsage()
       atl-cli jira describe PROJ-101 --adf-file FILE Set the description from a raw ADF JSON doc (rich formatting)
       atl-cli jira describe PROJ-101 --md-file FILE  Set the description from markdown (converted to ADF)
       atl-cli jira summary PROJ-101 "new title"      Set the summary/title (replaces existing)
+      atl-cli jira type PROJ-101 Task                Change the issue type (Story <-> Task etc.; same workflow only)
       atl-cli jira assign PROJ-101 @me|ACCOUNT_ID|--none
                                                      Set or clear the assignee
       atl-cli jira summary PROJ-101 --body-file FILE Set the summary from a file (first line wins; trimmed)
