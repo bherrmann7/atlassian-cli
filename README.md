@@ -38,10 +38,12 @@ Two tokens are needed because Atlassian's Bitbucket and Jira/Confluence use diff
 
 **Jira / Confluence** — Create a classic API token (the "Create API token" button, no scopes needed). This token inherits your account permissions.
 
-**Bitbucket** — Create a scoped API token ("Create API token with scopes"). Select these Bitbucket read scopes:
-- `read:pipeline:bitbucket`
-- `read:pullrequest:bitbucket`
-- `read:repository:bitbucket`
+**Bitbucket** — Create a scoped API token ("Create API token with scopes"). A scoped token can do only what its scopes list, whatever your account can do on the website. Select the scopes for the commands you use:
+- Reading (`bb pipeline`, `bb pr`, `bb env-vars`, ...): `read:pipeline:bitbucket`, `read:pullrequest:bitbucket`, `read:repository:bitbucket`
+- Writing PRs, comments, tasks and uploads, and running pipelines: add `write:pullrequest:bitbucket`, `write:repository:bitbucket`, `write:pipeline:bitbucket`
+- `bb env-var-set` only: add `admin:pipeline:bitbucket`, and your account needs admin on the repository. Without it the change is refused with 403 and nothing is written.
+
+Scopes cannot be added to an existing token: create a new one and replace the old value in user secrets.
 
 ### 2. Configure User Secrets
 
