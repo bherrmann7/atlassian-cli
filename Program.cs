@@ -1267,8 +1267,15 @@ async Task<int> HandleBitbucket(string[] args)
         {
             var runBranch = rest[0];
             string? selType = null, selPattern = null;
+            var runVars = new List<(string Key, string Value)>();
             for (int i = 1; i < rest.Length; i++)
             {
+                if (rest[i] == "--var" && i + 1 < rest.Length && rest[i + 1].IndexOf('=') is > 0 and var veq)
+                {
+                    runVars.Add((rest[i + 1][..veq], rest[i + 1][(veq + 1)..]));
+                    i++;
+                    continue;
+                }
                 string? selVal = null;
                 if (rest[i] == "--selector" && i + 1 < rest.Length) selVal = rest[++i];
                 else if (rest[i].StartsWith("--selector=")) selVal = rest[i].Substring("--selector=".Length);
@@ -1279,7 +1286,7 @@ async Task<int> HandleBitbucket(string[] args)
                     else { selType = selVal; }
                 }
             }
-            var triggered = await client.TriggerPipelineAsync(runBranch, selType, selPattern);
+            var triggered = await client.TriggerPipelineAsync(runBranch, selType, selPattern, runVars);
             Console.WriteLine(JsonSerializer.Serialize(triggered, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
         }
@@ -1478,8 +1485,9 @@ int PrintUsage()
                                                      Poll until the pipeline ends or parks on a manual gate.
                                                      Streams one JSON line per state change.
                                                      Exit 0 ok, 2 failed, 75 waiting on a gate.
-      atl-cli bb pipeline-run BRANCH [--selector custom:PATTERN]
-                                                     Trigger a pipeline (default branch pipeline, or a custom: one)
+      atl-cli bb pipeline-run BRANCH [--selector custom:PATTERN] [--var KEY=VALUE ...]
+                                                     Trigger a pipeline (default branch pipeline, or a custom: one),
+                                                     optionally with run-time variables
       atl-cli bb pipelines [--selector custom:NAME] [--limit N] [--scan N]
                                                      Pipelines newest first (build, created, creator, ref, selector, result);
                                                      --selector keeps custom pipelines whose name contains NAME

@@ -1218,7 +1218,7 @@ public partial class AtlassianClient
         return doc.RootElement;
     }
 
-    public async Task<JsonElement> TriggerPipelineAsync(string branch, string? selectorType, string? selectorPattern)
+    public async Task<JsonElement> TriggerPipelineAsync(string branch, string? selectorType, string? selectorPattern, IReadOnlyList<(string Key, string Value)>? variables = null)
     {
         var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
 
@@ -1237,7 +1237,11 @@ public partial class AtlassianClient
                 : (object)new { type = selectorType };
         }
 
-        var json = JsonSerializer.Serialize(new Dictionary<string, object?> { ["target"] = target });
+        var body = new Dictionary<string, object?> { ["target"] = target };
+        // Run-time variables, as the web UI's "Run pipeline" form sends them.
+        if (variables is { Count: > 0 })
+            body["variables"] = variables.Select(v => new { key = v.Key, value = v.Value, secured = false }).ToList();
+        var json = JsonSerializer.Serialize(body);
         var content = new StringContent(json, Encoding.UTF8, "application/json");
         var resp = await _bbHttp.PostAsync($"{repoPath}/pipelines/", content);
         if (!resp.IsSuccessStatusCode)
