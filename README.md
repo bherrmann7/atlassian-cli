@@ -183,6 +183,8 @@ atl-cli bb env-vars                                        # list environment na
 atl-cli bb env-vars Production                             # Key / Value / Secured as JSON
 atl-cli bb env-vars Production --key DbDeployAction        # bare value, for scripts (exit 3 if secured)
 atl-cli bb env-var-set Production DeployMode=safe --dry-run # change an existing, non-secured variable; prints before/after
+atl-cli bb pipelines --selector custom:deploy --limit 20     # recent pipelines (build, created, creator, ref, selector, result)
+atl-cli bb step-log 1234 "Build"                           # one step's raw log
 
 # Bitbucket — watch a pipeline until it ends or stops at a manual gate
 atl-cli bb pipeline-watch PROJ-101

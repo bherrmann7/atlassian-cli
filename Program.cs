@@ -1136,6 +1136,35 @@ async Task<int> HandleBitbucket(string[] args)
             }
         }
 
+        // Pipelines newest first, optionally filtered by custom selector name. JSON.
+        case "pipelines":
+        {
+            string? selector = null;
+            int limit = 25, scan = 2000;
+            for (int i = 0; i < rest.Length; i++)
+            {
+                if (rest[i] == "--selector" && i + 1 < rest.Length) selector = rest[++i];
+                else if (rest[i] == "--limit" && i + 1 < rest.Length && int.TryParse(rest[i + 1], out var l)) { limit = l; i++; }
+                else if (rest[i] == "--scan" && i + 1 < rest.Length && int.TryParse(rest[i + 1], out var s)) { scan = s; i++; }
+            }
+            if (selector is not null && selector.StartsWith("custom:")) selector = selector["custom:".Length..];
+            Console.WriteLine(JsonSerializer.Serialize(await client.ListPipelinesAsync(selector, limit, scan), new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        // One step's raw log, chosen by build number and a piece of the step name.
+        case "step-log" when rest.Length >= 2 && int.TryParse(rest[0], out var logBuild):
+        {
+            var log = await client.GetStepLogAsync(logBuild, rest[1]);
+            if (log is null)
+            {
+                Console.Error.WriteLine($"Build {logBuild} has no step whose name contains '{rest[1]}'");
+                return 1;
+            }
+            Console.Write(log);
+            return 0;
+        }
+
         // Change existing, non-secured deployment variables. Several KEY=VALUE pairs in one call;
         // every key is checked before anything is written. Exit: 0 ok (changed or already set),
         // 1 usage/not found, 3 a variable is secured, 4 a write did not read back.
@@ -1451,6 +1480,10 @@ int PrintUsage()
                                                      Exit 0 ok, 2 failed, 75 waiting on a gate.
       atl-cli bb pipeline-run BRANCH [--selector custom:PATTERN]
                                                      Trigger a pipeline (default branch pipeline, or a custom: one)
+      atl-cli bb pipelines [--selector custom:NAME] [--limit N] [--scan N]
+                                                     Pipelines newest first (build, created, creator, ref, selector, result);
+                                                     --selector keeps custom pipelines whose name contains NAME
+      atl-cli bb step-log BUILD STEP-NAME-PART       Print one step's raw log (first step whose name contains the text)
       atl-cli bb env-vars [ENVIRONMENT] [--key KEY]  Deployment environment variables (JSON; secured values never shown).
                                                      No ENVIRONMENT lists the environments; --key prints one bare value.
       atl-cli bb env-var-set ENVIRONMENT KEY=VALUE [KEY=VALUE ...] [--dry-run]

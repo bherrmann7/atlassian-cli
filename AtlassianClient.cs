@@ -1950,6 +1950,66 @@ public partial class AtlassianClient
         return steps;
     }
 
+    // Pipelines newest first, optionally only those whose selector pattern (custom:NAME) contains
+    // `selectorContains`. Scans at most `scanLimit` pipelines, since the repo history is long.
+    public async Task<List<PipelineSummary>> ListPipelinesAsync(string? selectorContains, int limit, int scanLimit)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var found = new List<PipelineSummary>();
+        string? url = $"{repoPath}/pipelines/?sort=-created_on&pagelen=100";
+        int scanned = 0;
+        while (url is not null && found.Count < limit && scanned < scanLimit)
+        {
+            var resp = await _bbHttp.GetAsync(url);
+            resp.EnsureSuccessStatusCode();
+            using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+            var root = doc.RootElement;
+            foreach (var p in root.GetProperty("values").EnumerateArray())
+            {
+                scanned++;
+                var target = p.GetProperty("target");
+                var selector = target.TryGetProperty("selector", out var sel) && sel.TryGetProperty("pattern", out var pat) ? pat.GetString() : null;
+                if (selectorContains is not null && (selector is null || !selector.Contains(selectorContains, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                var state = p.GetProperty("state");
+                var result = state.TryGetProperty("result", out var r) && r.TryGetProperty("name", out var rn) ? rn.GetString() : null;
+                found.Add(new PipelineSummary(
+                    p.GetProperty("build_number").GetInt32(),
+                    p.TryGetProperty("created_on", out var c) ? c.GetDateTimeOffset() : null,
+                    p.TryGetProperty("creator", out var cr) && cr.TryGetProperty("display_name", out var dn) ? dn.GetString() : null,
+                    target.TryGetProperty("ref_name", out var rf) ? rf.GetString() : null,
+                    selector,
+                    state.GetProperty("name").GetString() ?? "",
+                    result));
+                if (found.Count >= limit) break;
+            }
+            url = root.TryGetProperty("next", out var next) && next.ValueKind == JsonValueKind.String ? next.GetString() : null;
+        }
+        return found;
+    }
+
+    // The plain-text log of the first step of a build whose name contains `stepNameContains`.
+    // Null when no step matches; an empty string when the step never produced a log.
+    public async Task<string?> GetStepLogAsync(int buildNumber, string stepNameContains)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var steps = await GetPipelineStepsAsync(buildNumber.ToString());
+        var step = steps.FirstOrDefault(s => (s.GetProperty("name").GetString() ?? "").Contains(stepNameContains, StringComparison.OrdinalIgnoreCase));
+        if (step.ValueKind == JsonValueKind.Undefined)
+            return null;
+
+        // Same endpoint and Accept rule as GetPipelineFailureAsync's log fetch.
+        var logReq = new HttpRequestMessage(HttpMethod.Get,
+            $"{repoPath}/pipelines/{buildNumber}/steps/{Uri.EscapeDataString(step.GetProperty("uuid").GetString()!)}/log");
+        logReq.Headers.Accept.Clear();
+        logReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+        var logResp = await _bbHttp.SendAsync(logReq);
+        if (logResp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return "";
+        logResp.EnsureSuccessStatusCode();
+        return await logResp.Content.ReadAsStringAsync();
+    }
+
     // Bitbucket pages both endpoints, so follow `next`. Elements are cloned so they outlive the JsonDocument.
     private async Task<List<JsonElement>> GetAllBitbucketPagesAsync(string url)
     {
@@ -2152,6 +2212,7 @@ public record StatusChange(string At, string By, string From, string To);
 public record IssueLinkInfo(string Id, string Type, string Relation, string OtherKey);
 public record IssueAttachment(string Id, string Filename, string MediaType, long Size, string Author, string Created);
 public record DeploymentVariable(string Key, string? Value, bool Secured);
+public record PipelineSummary(int BuildNumber, DateTimeOffset? CreatedOn, string? Creator, string? Ref, string? Selector, string State, string? Result);
 public enum DeploymentVariableOutcome { Changed, Unchanged, DryRun, NoEnvironment, NoVariable, Secured, ReadBackMismatch }
 public record DeploymentVariableChange(DeploymentVariableOutcome Outcome, string Key, string? OldValue, string? NewValue);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
