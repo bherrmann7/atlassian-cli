@@ -2003,6 +2003,47 @@ public partial class AtlassianClient
             .ToList();
     }
 
+    // Change the value of an EXISTING, non-secured deployment variable. Never creates a variable and
+    // never touches a secured one (its old value cannot be read back, so the change could not be
+    // shown or undone). Reads the value back after the PUT and reports what actually landed.
+    public async Task<DeploymentVariableChange> SetDeploymentVariableAsync(string environmentName, string key, string newValue, bool dryRun)
+    {
+        var repoPath = $"/2.0/repositories/{_config.BitbucketWorkspace}/{_config.BitbucketRepo}";
+        var env = (await GetAllBitbucketPagesAsync($"{repoPath}/environments/?pagelen=100"))
+            .FirstOrDefault(e => string.Equals(e.GetProperty("name").GetString(), environmentName, StringComparison.OrdinalIgnoreCase));
+        if (env.ValueKind == JsonValueKind.Undefined)
+            return new DeploymentVariableChange(DeploymentVariableOutcome.NoEnvironment, key, null, null);
+
+        var envUuid = Uri.EscapeDataString(env.GetProperty("uuid").GetString()!);
+        var variablesPath = $"{repoPath}/deployments_config/environments/{envUuid}/variables";
+        var variable = (await GetAllBitbucketPagesAsync($"{variablesPath}?pagelen=100"))
+            .FirstOrDefault(v => v.GetProperty("key").GetString() == key);
+        if (variable.ValueKind == JsonValueKind.Undefined)
+            return new DeploymentVariableChange(DeploymentVariableOutcome.NoVariable, key, null, null);
+        if (variable.TryGetProperty("secured", out var sec) && sec.ValueKind == JsonValueKind.True)
+            return new DeploymentVariableChange(DeploymentVariableOutcome.Secured, key, null, null);
+
+        var oldValue = variable.TryGetProperty("value", out var val) && val.ValueKind == JsonValueKind.String ? val.GetString() : null;
+        if (oldValue == newValue)
+            return new DeploymentVariableChange(DeploymentVariableOutcome.Unchanged, key, oldValue, oldValue);
+        if (dryRun)
+            return new DeploymentVariableChange(DeploymentVariableOutcome.DryRun, key, oldValue, newValue);
+
+        var varUuid = Uri.EscapeDataString(variable.GetProperty("uuid").GetString()!);
+        var json = JsonSerializer.Serialize(new { key, value = newValue, secured = false });
+        var resp = await _bbHttp.PutAsync($"{variablesPath}/{varUuid}", new StringContent(json, Encoding.UTF8, "application/json"));
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync();
+            throw new HttpRequestException($"PUT variable '{key}' on '{environmentName}' failed ({(int)resp.StatusCode} {resp.ReasonPhrase}): {errBody}");
+        }
+
+        var readBack = (await GetDeploymentVariablesAsync(environmentName))?.FirstOrDefault(v => v.Key == key)?.Value;
+        return new DeploymentVariableChange(
+            readBack == newValue ? DeploymentVariableOutcome.Changed : DeploymentVariableOutcome.ReadBackMismatch,
+            key, oldValue, readBack);
+    }
+
     public async Task<PipelineFailure?> GetPipelineFailureAsync(string branch)
     {
         var data = await GetPipelinesAsync();
@@ -2111,6 +2152,8 @@ public record StatusChange(string At, string By, string From, string To);
 public record IssueLinkInfo(string Id, string Type, string Relation, string OtherKey);
 public record IssueAttachment(string Id, string Filename, string MediaType, long Size, string Author, string Created);
 public record DeploymentVariable(string Key, string? Value, bool Secured);
+public enum DeploymentVariableOutcome { Changed, Unchanged, DryRun, NoEnvironment, NoVariable, Secured, ReadBackMismatch }
+public record DeploymentVariableChange(DeploymentVariableOutcome Outcome, string Key, string? OldValue, string? NewValue);
 public record PipelineFailure(int BuildNumber, string StepName, List<string> Errors);
 public record PipelineStepInfo(string Name, string State, string? Result, DateTimeOffset? StartedOn, int? DurationSeconds);
 public record PipelineStepsReport(

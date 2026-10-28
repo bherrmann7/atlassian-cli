@@ -1136,6 +1136,57 @@ async Task<int> HandleBitbucket(string[] args)
             }
         }
 
+        // Change existing, non-secured deployment variables. Several KEY=VALUE pairs in one call;
+        // every key is checked before anything is written. Exit: 0 ok (changed or already set),
+        // 1 usage/not found, 3 a variable is secured, 4 a write did not read back.
+        case "env-var-set":
+        {
+            string? envName = null;
+            bool dryRun = false;
+            var pairs = new List<(string Key, string Value)>();
+            foreach (var arg in rest)
+            {
+                if (arg == "--dry-run") dryRun = true;
+                else if (envName is null && !arg.Contains('=')) envName = arg;
+                else if (arg.IndexOf('=') is > 0 and var eq) pairs.Add((arg[..eq], arg[(eq + 1)..]));
+                else { Console.Error.WriteLine($"Not a KEY=VALUE pair: '{arg}'"); return 1; }
+            }
+            if (envName is null || pairs.Count == 0)
+            {
+                Console.Error.WriteLine("Usage: atl-cli bb env-var-set ENVIRONMENT KEY=VALUE [KEY=VALUE ...] [--dry-run]");
+                return 1;
+            }
+
+            // Pass 1: dry-run every pair, so a typo or secured key stops the whole call before any write.
+            var plan = new List<DeploymentVariableChange>();
+            foreach (var (key, value) in pairs)
+                plan.Add(await client.SetDeploymentVariableAsync(envName, key, value, dryRun: true));
+
+            var blocked = plan.FirstOrDefault(p => p.Outcome is DeploymentVariableOutcome.NoEnvironment or DeploymentVariableOutcome.NoVariable or DeploymentVariableOutcome.Secured);
+            if (blocked is not null)
+            {
+                Console.Error.WriteLine(blocked.Outcome switch
+                {
+                    DeploymentVariableOutcome.NoEnvironment => $"No deployment environment named '{envName}'. Nothing was changed.",
+                    DeploymentVariableOutcome.NoVariable => $"'{envName}' has no variable '{blocked.Key}' (this command never creates one). Nothing was changed.",
+                    _ => $"'{blocked.Key}' is secured; this command does not change secured variables. Nothing was changed.",
+                });
+                return blocked.Outcome == DeploymentVariableOutcome.Secured ? 3 : 1;
+            }
+
+            var results = new List<DeploymentVariableChange>();
+            if (dryRun)
+                results = plan;
+            else
+                foreach (var (key, value) in pairs)
+                    results.Add(await client.SetDeploymentVariableAsync(envName, key, value, dryRun: false));
+
+            Console.WriteLine(JsonSerializer.Serialize(
+                results.Select(r => new { r.Key, Outcome = r.Outcome.ToString(), Before = r.OldValue, After = r.NewValue }),
+                new JsonSerializerOptions { WriteIndented = true }));
+            return results.Any(r => r.Outcome == DeploymentVariableOutcome.ReadBackMismatch) ? 4 : 0;
+        }
+
         // A deployment environment's variables. No name lists the environments. --key prints one
         // variable's bare value for scripts. Exit: 0 ok, 1 usage/not found, 3 the variable is secured.
         case "env-vars":
@@ -1402,6 +1453,8 @@ int PrintUsage()
                                                      Trigger a pipeline (default branch pipeline, or a custom: one)
       atl-cli bb env-vars [ENVIRONMENT] [--key KEY]  Deployment environment variables (JSON; secured values never shown).
                                                      No ENVIRONMENT lists the environments; --key prints one bare value.
+      atl-cli bb env-var-set ENVIRONMENT KEY=VALUE [KEY=VALUE ...] [--dry-run]
+                                                     Change existing non-secured deployment variables; prints before/after
       atl-cli bb pr PROJ-101 [--state OPEN|MERGED|...] PRs for a source branch (JSON)
       atl-cli bb prs [--state OPEN|MERGED|...] [--limit N]  Every PR in the repo (default OPEN, 50), newest update first (JSON)
       atl-cli bb pr-get PR_ID                         One PR as JSON: author, state, draft, head commit, approvals,
@@ -1549,6 +1602,22 @@ static Dictionary<string, string> HelpTopics() => new(StringComparer.OrdinalIgno
     cannot leak a secret. With --key, a secured variable exits 3; an unknown environment or key exits 1.
 
     Needs read access to pipelines/deployments on the Bitbucket token.
+    """,
+
+    ["bb env-var-set"] = """
+    atl-cli bb env-var-set ENVIRONMENT KEY=VALUE [KEY=VALUE ...] [--dry-run]
+
+    Changes the value of deployment variables that already exist and are not secured, e.g.
+      atl-cli bb env-var-set Staging DeployMode=safe LegacyMode=safe --dry-run
+
+    Every key is checked before anything is written: an unknown environment or key, or a secured
+    variable, stops the whole call with nothing changed. It never creates or deletes a variable.
+    Each write is read back. Prints JSON per key: Key, Outcome (Changed, Unchanged, DryRun,
+    ReadBackMismatch), Before, After.
+
+    Exit: 0 ok, 1 usage/not found, 3 a secured variable was named, 4 a write did not read back.
+    Needs repository admin (write access to pipeline variables) on the Bitbucket token; without it
+    the PUT fails with 403.
     """,
 
     ["wiki update"] = """
